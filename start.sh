@@ -34,18 +34,19 @@ echo "   Gemini:   ${GEMINI_MODEL:-gemini-3.1-flash-live-preview} / ${GEMINI_TTS
 echo "   Supabase: ${SUPABASE_URL}"
 echo "   SIP Trunk: ${OUTBOUND_TRUNK_ID:-not set}"
 
-# ── Start FastAPI server in background ───────────────────────────────────────
-echo "🌐 Starting FastAPI server on port 8000..."
-uvicorn server:app --host 0.0.0.0 --port 8000 &
+# ── Resolve port — Coolify/Railway inject PORT; default to 8000 ──────────────
+APP_PORT="${PORT:-8000}"
+echo "🌐 Starting FastAPI server on port ${APP_PORT}..."
+uvicorn server:app --host 0.0.0.0 --port "${APP_PORT}" &
 SERVER_PID=$!
 
 # Ensure uvicorn is killed when this script exits for any reason
 trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
 
 # ── Wait for FastAPI to be ready (up to 30s) ─────────────────────────────────
-echo "⏳ Waiting for FastAPI to be ready..."
+echo "⏳ Waiting for FastAPI to be ready on port ${APP_PORT}..."
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8000/ > /dev/null 2>&1; then
+    if curl -sf "http://localhost:${APP_PORT}/" > /dev/null 2>&1; then
         echo "✅ FastAPI server ready (${i}s)"
         break
     fi
