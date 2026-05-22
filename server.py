@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from livekit import api
+
 _orig_ssl = ssl.create_default_context
 def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
     if not kwargs.get("cafile") and not kwargs.get("capath") and not kwargs.get("cadata"):
@@ -566,3 +568,48 @@ async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
         if campaign and campaign.get("schedule_type") in ("daily", "weekdays"):
             _schedule_campaign(campaign_id, campaign["schedule_type"], campaign.get("schedule_time", "09:00"))
     return {"status": req.status}
+
+
+
+@app.post("/api/simulate-call")
+async def simulate_call():
+    room_name = f"sim-{random.randint(1000,9999)}"
+
+    token = api.AccessToken(
+        os.getenv("LIVEKIT_API_KEY"),
+        os.getenv("LIVEKIT_API_SECRET"),
+    ) \
+    .with_identity("browser-user") \
+    .with_name("Browser User") \
+    .with_grants(api.VideoGrants(
+        room_join=True,
+        room=room_name,
+    ))
+
+    room_token = token.to_jwt()
+
+    livekit_api = api.LiveKitAPI()
+
+    await livekit_api.room.create_room(
+        api.CreateRoomRequest(name=room_name)
+    )
+
+    metadata = {
+    "lead_name": "Niraj",
+    "phone_number": None,
+    "business_name": "Test Company",
+    "service_type": "Simulation",
+    }
+
+    await livekit_api.agent_dispatch.create_dispatch(
+        api.CreateAgentDispatchRequest(
+            agent_name="outbound-caller",
+            room=room_name,
+            metadata=json.dumps(metadata)
+        )
+    )
+
+    return {
+        "room_name": room_name,
+        "token": room_token,
+    }

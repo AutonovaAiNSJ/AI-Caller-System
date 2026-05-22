@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>OutboundAI — Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -235,6 +236,12 @@ input[type=file]{padding:6px;border:1px dashed var(--border);cursor:pointer}
       </div>
       <div id="call-err" class="inline-err"></div>
       <button type="submit" class="btn btn-primary">📞 Place Call</button>
+      <button type="button"
+              class="btn btn-purple"
+              onclick="startSimulatedCall()"
+              style="margin-left:8px">
+        🎤 Start Simulated Call
+      </button>
     </form>
   </div>
 </div>
@@ -1388,6 +1395,85 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ══════════════════════════════════════════════════════
+//  Browser Simulation Mode
+// ══════════════════════════════════════════════════════
+
+let simRoom = null;
+
+async function startSimulatedCall() {
+  try {
+
+    toast('Starting simulated AI call...', 'info');
+
+    const response = await fetch('/api/simulate-call', {
+      method: 'POST'
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      toast(data.detail || 'Failed to start simulation', 'err');
+      return;
+    }
+
+    simRoom = new LivekitClient.Room();
+
+    await simRoom.connect(
+      'wss://outbound-ai-fhvmyy0b.livekit.cloud',
+      data.token
+    );
+
+    await simRoom.localParticipant.setMicrophoneEnabled(true);
+
+    toast('🎤 Microphone connected', 'ok');
+
+    simRoom.on('trackSubscribed', (track, publication, participant) => {
+
+      console.log('TRACK SUBSCRIBED');
+      console.log(track);
+      console.log(publication);
+      console.log(participant);
+
+      toast(`Track received: ${track.kind}`, 'info');
+
+      if (track.kind === 'audio') {
+
+        console.log('AUDIO TRACK FOUND');
+
+        const audioElement = track.attach();
+
+        audioElement.autoplay = true;
+        audioElement.controls = true;
+
+        document.body.appendChild(audioElement);
+
+        audioElement.play()
+          .then(() => {
+            console.log('Audio playback started');
+            toast('🔊 Gemini audio playing', 'ok');
+          })
+          .catch(err => {
+            console.error('Playback failed:', err);
+            toast('Audio autoplay blocked', 'err');
+          });
+      }
+    });
+
+    simRoom.on('disconnected', () => {
+      toast('Simulation disconnected', 'info');
+    });
+
+    console.log('Simulation room connected');
+
+  } catch (err) {
+
+    console.error(err);
+
+    toast(err.message || 'Simulation failed', 'err');
+  }
+}
 </script>
 </body>
 </html>

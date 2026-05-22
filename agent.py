@@ -217,14 +217,20 @@ async def entrypoint(ctx: agents.JobContext):
         os.environ["GEMINI_MODEL"] = model_override
 
     # ── Resolve enabled tools ────────────────────────────────────────────────
-    enabled_tools: list = []
-    if tools_override:
-        try:
-            enabled_tools = json.loads(tools_override) if isinstance(tools_override, str) else list(tools_override)
-        except Exception:
-            enabled_tools = []
-    if not enabled_tools:
-        enabled_tools = await get_enabled_tools()
+    # enabled_tools: list = []
+    # if tools_override:
+    #     try:
+    #         enabled_tools = json.loads(tools_override) if isinstance(tools_override, str) else list(tools_override)
+    #     except Exception:
+    #         enabled_tools = []
+    # if not enabled_tools:
+    #     enabled_tools = await get_enabled_tools()
+    enabled_tools = [
+        "check_availability",
+        "book_appointment",
+        "end_call",
+        "transfer_to_human",
+    ]
 
     # ── Resolve system prompt (DB → metadata → default) ─────────────────────
     if not system_prompt:
@@ -245,27 +251,36 @@ async def entrypoint(ctx: agents.JobContext):
     # ── Dial — MUST come before session.start() (Rule 1) ────────────────────
     if phone_number:
         trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
-        if not trunk_id:
-            await _log("error", "OUTBOUND_TRUNK_ID not set — cannot place outbound call")
-            ctx.shutdown()
-            return
-        await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
-        try:
-            await ctx.api.sip.create_sip_participant(
-                api.CreateSIPParticipantRequest(
-                    room_name=ctx.room.name,
-                    sip_trunk_id=trunk_id,
-                    sip_call_to=phone_number,
-                    participant_identity=f"sip_{phone_number}",
-                    wait_until_answered=True,
-                )
-            )
-        except Exception as exc:
-            await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
-            ctx.shutdown()
-            return
-        await _log("info", f"Call ANSWERED — {phone_number} picked up, starting AI session now")
 
+        if trunk_id:
+            await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
+
+            # try:
+            #     await ctx.api.sip.create_sip_participant(
+            #         api.CreateSIPParticipantRequest(
+            #             room_name=ctx.room.name,
+            #             sip_trunk_id=trunk_id,
+            #             sip_call_to=phone_number,
+            #             participant_identity=f"sip_{phone_number}",
+            #             wait_until_answered=True,
+            #         )
+            #     )
+
+            #     await _log(
+            #         "info",
+            #         f"Call ANSWERED — {phone_number} picked up, starting AI session now"
+            #     )
+
+            # except Exception as exc:
+            #     await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+            #     ctx.shutdown()
+            #     return
+
+        else:
+            await _log(
+                "warning",
+                "No SIP trunk configured — running in local/browser mode"
+            )
     # ── Build and start Gemini Live ──────────────────────────────────────────
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     await _log("info", f"Building AI session — model={gemini_model}")
@@ -325,17 +340,17 @@ async def entrypoint(ctx: agents.JobContext):
     # gemini-3.1 and gemini-2.5 native-audio speak autonomously from system prompt.
     # generate_reply() is blocked by the plugin for these models — skip entirely.
     _active_model = os.getenv("GEMINI_MODEL", "")
-    if "3.1" in _active_model or "2.5" in _active_model:
-        await _log("info", "Gemini native-audio: model will greet autonomously from system prompt")
-    else:
-        greeting = (
-            f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
-            if phone_number else "Greet the caller warmly."
-        )
-        try:
-            await session.generate_reply(instructions=greeting)
-        except Exception as _gr_exc:
-            await _log("warning", f"generate_reply failed: {_gr_exc}")
+    greeting = (
+        f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
+        if phone_number else
+        "Hello! This is the AI assistant speaking. How can I help you today?"
+    )
+
+    try:
+        await session.generate_reply(instructions=greeting)
+        await _log("info", "Greeting generated")
+    except Exception as _gr_exc:
+        await _log("warning", f"generate_reply failed: {_gr_exc}")
 
     # ── Keep session alive until SIP participant actually leaves (Rule 2) ────
     # Watch participant_disconnected for the specific SIP identity.
