@@ -242,6 +242,13 @@ input[type=file]{padding:6px;border:1px dashed var(--border);cursor:pointer}
               style="margin-left:8px">
         🎤 Start Simulated Call
       </button>
+      <button type="button"
+              class="btn btn-secondary"
+              id="stop-sim-btn"
+              onclick="stopSimulatedCall()"
+              style="margin-left:8px" disabled>
+        ⏹ Stop Simulated Call
+      </button>
     </form>
   </div>
 </div>
@@ -1401,6 +1408,8 @@ document.addEventListener('DOMContentLoaded', init);
 // ══════════════════════════════════════════════════════
 
 let simRoom = null;
+let simAudioEl = null;
+let simAudioTrack = null;
 
 async function startSimulatedCall() {
   try {
@@ -1418,18 +1427,19 @@ async function startSimulatedCall() {
       return;
     }
 
-    simRoom = new LivekitClient.Room();
+  simRoom = new LivekitClient.Room();
+  $('stop-sim-btn').disabled = false;
 
     await simRoom.connect(
-      'wss://outbound-ai-fhvmyy0b.livekit.cloud',
+      data.livekit_url,
       data.token
     );
 
-    await simRoom.localParticipant.setMicrophoneEnabled(true);
+  await simRoom.localParticipant.setMicrophoneEnabled(true);
 
     toast('🎤 Microphone connected', 'ok');
 
-    simRoom.on('trackSubscribed', (track, publication, participant) => {
+  simRoom.on('trackSubscribed', (track, publication, participant) => {
 
       console.log('TRACK SUBSCRIBED');
       console.log(track);
@@ -1438,18 +1448,22 @@ async function startSimulatedCall() {
 
       toast(`Track received: ${track.kind}`, 'info');
 
-      if (track.kind === 'audio') {
+  if (track.kind === 'audio') {
 
         console.log('AUDIO TRACK FOUND');
 
-        const audioElement = track.attach();
+        if (!simAudioEl) {
+          simAudioEl = document.createElement('audio');
+          simAudioEl.autoplay = true;
+          simAudioEl.controls = true;
+          simAudioEl.playsInline = true;
+          document.body.appendChild(simAudioEl);
+        }
 
-        audioElement.autoplay = true;
-        audioElement.controls = true;
+        simAudioTrack = track;
+        track.attach(simAudioEl);
 
-        document.body.appendChild(audioElement);
-
-        audioElement.play()
+        simAudioEl.play()
           .then(() => {
             console.log('Audio playback started');
             toast('🔊 Gemini audio playing', 'ok');
@@ -1461,8 +1475,19 @@ async function startSimulatedCall() {
       }
     });
 
+    simRoom.on('trackUnsubscribed', (track) => {
+      if (track.kind === 'audio' && simAudioEl) {
+        track.detach(simAudioEl);
+        if (simAudioTrack === track) simAudioTrack = null;
+      }
+    });
+
+    simRoom.on('participantConnected', (participant) => {
+      toast(`Participant connected: ${participant.identity || 'remote'}`, 'info');
+    });
+
     simRoom.on('disconnected', () => {
-      toast('Simulation disconnected', 'info');
+      cleanupSimulatedCall('Simulation disconnected');
     });
 
     console.log('Simulation room connected');
@@ -1472,6 +1497,45 @@ async function startSimulatedCall() {
     console.error(err);
 
     toast(err.message || 'Simulation failed', 'err');
+  }
+}
+
+async function stopSimulatedCall() {
+  await cleanupSimulatedCall('Simulation stopped');
+}
+
+async function cleanupSimulatedCall(msg) {
+  try {
+    if (simRoom) {
+      try {
+        await simRoom.localParticipant.setMicrophoneEnabled(false);
+      } catch (e) {}
+
+      try {
+        for (const pub of simRoom.localParticipant.trackPublications.values()) {
+          if (pub.track) {
+            try { pub.track.stop(); } catch (e) {}
+            try { simRoom.localParticipant.unpublishTrack(pub.track); } catch (e) {}
+          }
+        }
+      } catch (e) {}
+
+      try { simRoom.disconnect(); } catch (e) {}
+    }
+
+    if (simAudioTrack && simAudioEl) {
+      try { simAudioTrack.detach(simAudioEl); } catch (e) {}
+    }
+    if (simAudioEl) {
+      try { simAudioEl.pause(); } catch (e) {}
+      simAudioEl.remove();
+      simAudioEl = null;
+    }
+  } finally {
+    simRoom = null;
+    simAudioTrack = null;
+    $('stop-sim-btn').disabled = true;
+    if (msg) toast(msg, 'info');
   }
 }
 </script>

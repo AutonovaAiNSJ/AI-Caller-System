@@ -575,9 +575,15 @@ async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
 async def simulate_call():
     room_name = f"sim-{random.randint(1000,9999)}"
 
+    url = os.getenv("LIVEKIT_URL")
+    key = os.getenv("LIVEKIT_API_KEY")
+    secret = os.getenv("LIVEKIT_API_SECRET")
+    if not all([url, key, secret]):
+        raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
+
     token = api.AccessToken(
-        os.getenv("LIVEKIT_API_KEY"),
-        os.getenv("LIVEKIT_API_SECRET"),
+        key,
+        secret,
     ) \
     .with_identity("browser-user") \
     .with_name("Browser User") \
@@ -588,28 +594,31 @@ async def simulate_call():
 
     room_token = token.to_jwt()
 
-    livekit_api = api.LiveKitAPI()
-
-    await livekit_api.room.create_room(
-        api.CreateRoomRequest(name=room_name)
-    )
-
-    metadata = {
-    "lead_name": "Niraj",
-    "phone_number": None,
-    "business_name": "Test Company",
-    "service_type": "Simulation",
-    }
-
-    await livekit_api.agent_dispatch.create_dispatch(
-        api.CreateAgentDispatchRequest(
-            agent_name="outbound-caller",
-            room=room_name,
-            metadata=json.dumps(metadata)
+    livekit_api = api.LiveKitAPI(url=url, api_key=key, api_secret=secret)
+    try:
+        await livekit_api.room.create_room(
+            api.CreateRoomRequest(name=room_name)
         )
-    )
+
+        metadata = {
+        "lead_name": "Niraj",
+        "phone_number": None,
+        "business_name": "Test Company",
+        "service_type": "Simulation",
+        }
+
+        await livekit_api.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name="outbound-caller",
+                room=room_name,
+                metadata=json.dumps(metadata)
+            )
+        )
+    finally:
+        await livekit_api.aclose()
 
     return {
         "room_name": room_name,
         "token": room_token,
+        "livekit_url": url,
     }

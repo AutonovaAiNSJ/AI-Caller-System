@@ -41,8 +41,8 @@ SENSITIVE_KEYS = {
 
 
 _sync_db_client = None
-_async_db_client = None
-_adb_lock: asyncio.Lock | None = None
+_async_db_clients: dict[int, object] = {}
+_adb_locks: dict[int, asyncio.Lock] = {}
 
 
 def _sdb():
@@ -54,17 +54,18 @@ def _sdb():
 
 
 async def _adb():
-    global _async_db_client, _adb_lock
-    if _adb_lock is None:
-        _adb_lock = asyncio.Lock()
-    if _async_db_client is None:
-        async with _adb_lock:
-            if _async_db_client is None:
+    loop = asyncio.get_running_loop()
+    loop_key = id(loop)
+    if loop_key not in _adb_locks:
+        _adb_locks[loop_key] = asyncio.Lock()
+    if loop_key not in _async_db_clients:
+        async with _adb_locks[loop_key]:
+            if loop_key not in _async_db_clients:
                 from supabase._async.client import create_client as _ac
-                _async_db_client = await _ac(
+                _async_db_clients[loop_key] = await _ac(
                     _default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY")
                 )
-    return _async_db_client
+    return _async_db_clients[loop_key]
 
 
 def init_db() -> None:
@@ -273,6 +274,19 @@ async def log_call(
     if notes:
         row["notes"] = notes
     await db.table("call_logs").insert(row).execute()
+
+
+async def save_transcript(room_name: str, speaker: str, message: str) -> None:
+    """Persist a transcript line into call_transcripts table."""
+    if not (room_name and speaker and message):
+        return
+    db = await _adb()
+    await db.table("call_transcripts").insert({
+        "room_name": room_name,
+        "speaker": speaker,
+        "message": message,
+        "created_at": datetime.now().isoformat(),
+    }).execute()
 
 
 async def get_all_calls(page: int = 1, limit: int = 20) -> list:

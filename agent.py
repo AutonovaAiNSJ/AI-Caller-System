@@ -4,6 +4,7 @@ import logging
 import os
 import ssl
 import certifi
+import traceback
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -25,7 +26,7 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation, silero
 
-from db import init_db, log_error, get_enabled_tools
+from db import init_db, log_error, get_enabled_tools, save_transcript
 from prompts import build_prompt
 from tools import AppointmentTools
 
@@ -43,7 +44,19 @@ async def _log(level: str, msg: str, detail: str = "") -> None:
     try:
         await log_error("agent", msg, detail, level)
     except Exception:
-        pass
+        logger.exception("Failed to persist log entry")
+
+
+async def _log_exception(msg: str, exc: Exception, level: str = "error") -> None:
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    if level == "warning":
+        logger.exception(msg)
+    else:
+        logger.exception(msg)
+    try:
+        await log_error("agent", msg, tb, level)
+    except Exception:
+        logger.exception("Failed to persist exception log")
 
 
 def load_db_settings_to_env() -> None:
@@ -60,7 +73,7 @@ def load_db_settings_to_env() -> None:
             if row.get("value"):
                 os.environ[row["key"]] = row["value"]
     except Exception as exc:
-        logger.warning("Could not load settings from Supabase: %s", exc)
+        logger.exception("Could not load settings from Supabase")
 
 
 # ── Import Google plugin paths ───────────────────────────────────────────────
@@ -75,26 +88,26 @@ try:
         _google_realtime = _gp.realtime.RealtimeModel
         logger.info("Loaded google.realtime.RealtimeModel (stable path)")
     except AttributeError:
-        pass
+        logger.exception("google.realtime.RealtimeModel not available")
     try:
         _google_beta_realtime = _gp.beta.realtime.RealtimeModel
         logger.info("Loaded google.beta.realtime.RealtimeModel (beta path)")
     except AttributeError:
-        pass
+        logger.exception("google.beta.realtime.RealtimeModel not available")
     try:
         _google_llm = _gp.LLM
         _google_tts = _gp.TTS
     except AttributeError:
-        pass
+        logger.exception("google LLM/TTS not available")
 except ImportError:
-    logger.warning("livekit-plugins-google not installed")
+    logger.exception("livekit-plugins-google not installed")
 
 _deepgram_stt = None
 try:
     from livekit.plugins import deepgram as _dg
     _deepgram_stt = _dg.STT
 except ImportError:
-    pass
+    logger.exception("livekit-plugins-deepgram not installed")
 
 
 # ── Session factory ──────────────────────────────────────────────────────────
@@ -141,26 +154,12 @@ def _build_session(tools: list, system_prompt: str) -> AgentSession:
                     ),
                 )
                 logger.info("✅ Gemini Live: model=%s voice=%s", model_name, voice)
-                return AgentSession(model=model, tools=tools)
-            except Exception as exc:
-                logger.warning("Gemini Live init failed (%s) — falling back to pipeline", exc)
+                return AgentSession(llm=model, tools=tools)
+            except Exception:
+                logger.exception("Gemini Live init failed")
+                raise
 
-    # ── Pipeline fallback (Deepgram STT + Gemini LLM) ───────────────────────
-    logger.warning("Using pipeline fallback (STT + LLM)")
-    _vad = silero.VAD.load()
-    _stt = None
-    if _deepgram_stt:
-        _dgk = os.getenv("DEEPGRAM_API_KEY", "")
-        if _dgk:
-            _stt = _deepgram_stt(api_key=_dgk)
-    _llm = None
-    if _google_llm and api_key:
-        _llm = _google_llm(model="gemini-2.0-flash", api_key=api_key)
-    if _stt and _llm:
-        return AgentSession(vad=_vad, stt=_stt, llm=_llm, tools=tools)
-    raise RuntimeError(
-        "Cannot build AgentSession — check GOOGLE_API_KEY and DEEPGRAM_API_KEY env vars."
-    )
+    raise RuntimeError("Gemini realtime not configured — set USE_GEMINI_REALTIME=true and GOOGLE_API_KEY")
 
 
 class OutboundAssistant(Agent):
@@ -208,7 +207,7 @@ async def entrypoint(ctx: agents.JobContext):
         model_override = meta.get("model_override")
         tools_override = meta.get("tools_override")
     except Exception as exc:
-        await _log("warning", f"Metadata parse error: {exc}")
+        await _log_exception("Metadata parse error", exc, "warning")
 
     # ── Apply agent profile overrides (Rule 10) ──────────────────────────────
     if voice_override:
@@ -246,7 +245,74 @@ async def entrypoint(ctx: agents.JobContext):
 
     tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
 
-    await _log("info", f"Connected to LiveKit room: {ctx.room.name}")
+    async def _persist_transcript(speaker: str, text: str) -> None:
+        try:
+            await save_transcript(ctx.room.name, speaker, text)
+            await _log("info", "Transcript saved", f"{speaker}: {text[:160]}")
+        except Exception as exc:
+            await _log_exception("Transcript save failed", exc, "warning")
+
+    def _is_local(participant: Optional[rtc.Participant]) -> bool:
+        try:
+            if participant is None:
+                return False
+            if getattr(participant, "is_local", False):
+                return True
+            return getattr(participant, "identity", None) == ctx.room.local_participant.identity
+        except Exception:
+            return False
+
+    def _on_transcription_received(segments, participant=None, publication=None):
+        try:
+            for seg in segments or []:
+                text = getattr(seg, "text", "") or ""
+                if not text.strip():
+                    continue
+                is_final = getattr(seg, "final", True)
+                if not is_final:
+                    continue
+                speaker = "ai" if _is_local(participant) else "user"
+                if speaker == "user":
+                    asyncio.create_task(_log("info", "User speech detected", text[:160]))
+                else:
+                    asyncio.create_task(_log("info", "AI response generated", text[:160]))
+                asyncio.create_task(_persist_transcript(speaker, text))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("Transcription handler error", exc, "warning"))
+
+    def _on_participant_connected(participant: rtc.RemoteParticipant):
+        asyncio.create_task(_log("info", "Participant connected", participant.identity))
+
+    def _on_track_subscribed(track, publication=None, participant=None):
+        try:
+            kind = getattr(track, "kind", "unknown")
+            pid = getattr(participant, "identity", "unknown") if participant else "unknown"
+            asyncio.create_task(_log("info", "Audio track subscribed", f"{kind} from {pid}"))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("Track subscribed handler error", exc, "warning"))
+
+    def _on_track_published(publication=None, participant=None):
+        try:
+            if participant and participant.identity != ctx.room.local_participant.identity:
+                return
+            kind = getattr(publication, "kind", "unknown")
+            asyncio.create_task(_log("info", "AI audio published", str(kind)))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("Track published handler error", exc, "warning"))
+
+    def _on_room_disconnected():
+        asyncio.create_task(_log("info", "Room disconnected"))
+
+    try:
+        ctx.room.on("transcription_received", _on_transcription_received)
+        ctx.room.on("participant_connected", _on_participant_connected)
+        ctx.room.on("track_subscribed", _on_track_subscribed)
+        ctx.room.on("track_published", _on_track_published)
+        ctx.room.on("disconnected", _on_room_disconnected)
+    except Exception as exc:
+        await _log_exception("Failed to register room event handlers", exc, "warning")
+
+    await _log("info", f"AI agent connected: room={ctx.room.name}")
 
     # ── Dial — MUST come before session.start() (Rule 1) ────────────────────
     if phone_number:
@@ -304,7 +370,41 @@ async def entrypoint(ctx: agents.JobContext):
         )
 
     await session.start(**_session_kwargs)
-    await _log("info", "Agent session started — AI ready, generating greeting")
+    await _log("info", "Gemini session started")
+
+    def _on_user_input_transcribed(ev) -> None:
+        try:
+            if not getattr(ev, "is_final", False):
+                return
+            text = getattr(ev, "transcript", "") or ""
+            if not text.strip():
+                return
+            asyncio.create_task(_log("info", "User speech detected", text[:160]))
+            asyncio.create_task(_persist_transcript("user", text))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("User transcript handler error", exc, "warning"))
+
+    def _on_conversation_item_added(ev) -> None:
+        try:
+            item = getattr(ev, "item", None)
+            role = getattr(item, "role", None)
+            if role != "assistant":
+                return
+            text = getattr(item, "text_content", None) or ""
+            if not text.strip():
+                return
+            asyncio.create_task(_log("info", "AI response generated", text[:160]))
+            asyncio.create_task(_persist_transcript("ai", text))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("AI transcript handler error", exc, "warning"))
+
+    try:
+        session.on("user_input_transcribed", _on_user_input_transcribed)
+        session.on("conversation_item_added", _on_conversation_item_added)
+    except Exception as exc:
+        await _log_exception("Failed to register session handlers", exc, "warning")
+
+    # track_published handled via room event (local participant lacks .on in rtc 1.1.8)
 
     # ── Optional S3 recording via LiveKit Egress ─────────────────────────────
     if phone_number:
@@ -334,7 +434,7 @@ async def entrypoint(ctx: agents.JobContext):
                 )
                 await _log("info", f"Recording started: egress={_egress.egress_id}")
             except Exception as _exc:
-                await _log("warning", f"Recording start failed (non-fatal): {_exc}")
+                await _log_exception("Recording start failed (non-fatal)", _exc, "warning")
 
     # ── Greeting (Rule 4) ────────────────────────────────────────────────────
     # gemini-3.1 and gemini-2.5 native-audio speak autonomously from system prompt.
@@ -343,14 +443,14 @@ async def entrypoint(ctx: agents.JobContext):
     greeting = (
         f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
         if phone_number else
-        "Hello! This is the AI assistant speaking. How can I help you today?"
+        "Hello, this is OutboundAI. How can I help you today?"
     )
 
     try:
         await session.generate_reply(instructions=greeting)
         await _log("info", "Greeting generated")
     except Exception as _gr_exc:
-        await _log("warning", f"generate_reply failed: {_gr_exc}")
+        await _log_exception("generate_reply failed", _gr_exc, "warning")
 
     # ── Keep session alive until SIP participant actually leaves (Rule 2) ────
     # Watch participant_disconnected for the specific SIP identity.
