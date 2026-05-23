@@ -28,7 +28,7 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
 ssl.create_default_context = _certifi_ssl
 
 port = int(os.getenv("PORT", 8000))
-uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 from db import (
     SENSITIVE_KEYS, cancel_appointment, clear_errors, create_campaign, delete_campaign,
@@ -627,3 +627,6 @@ async def simulate_call():
         "token": room_token,
         "livekit_url": url,
     }
+
+
+uvicorn.run(app, host="0.0.0.0", port=port)
