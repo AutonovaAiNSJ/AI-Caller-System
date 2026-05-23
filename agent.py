@@ -24,7 +24,7 @@ try:
     _HAS_ROOM_OPTIONS = True
 except ImportError:
     _HAS_ROOM_OPTIONS = False
-from livekit.plugins import noise_cancellation, silero
+from livekit.plugins import noise_cancellation
 
 from db import init_db, log_error, get_enabled_tools, save_transcript
 from prompts import build_prompt
@@ -102,12 +102,12 @@ try:
 except ImportError:
     logger.exception("livekit-plugins-google not installed")
 
-_deepgram_stt = None
-try:
-    from livekit.plugins import deepgram as _dg
-    _deepgram_stt = _dg.STT
-except ImportError:
-    logger.exception("livekit-plugins-deepgram not installed")
+# _deepgram_stt = None
+# try:
+#     from livekit.plugins import deepgram as _dg
+#     _deepgram_stt = _dg.STT
+# except ImportError:
+#     logger.exception("livekit-plugins-deepgram not installed")
 
 
 # ── Session factory ──────────────────────────────────────────────────────────
