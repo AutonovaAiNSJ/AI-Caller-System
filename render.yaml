@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: outboundai
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    plan: free

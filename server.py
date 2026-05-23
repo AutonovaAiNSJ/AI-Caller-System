@@ -1,3 +1,5 @@
+import os
+
 """FastAPI backend for the OutboundAI dashboard."""
 
 import asyncio
@@ -24,6 +26,9 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
         kwargs["cafile"] = certifi.where()
     return _orig_ssl(purpose, **kwargs)
 ssl.create_default_context = _certifi_ssl
+
+port = int(os.getenv("PORT", 8000))
+uvicorn.run(app, host="0.0.0.0", port=port)
 
 from db import (
     SENSITIVE_KEYS, cancel_appointment, clear_errors, create_campaign, delete_campaign,
