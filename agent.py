@@ -224,12 +224,20 @@ async def entrypoint(ctx: agents.JobContext):
     #         enabled_tools = []
     # if not enabled_tools:
     #     enabled_tools = await get_enabled_tools()
-    enabled_tools = [
-        "check_availability",
-        "book_appointment",
-        "end_call",
-        "transfer_to_human",
-    ]
+    enabled_tools = []
+
+    if tools_override:
+        try:
+            enabled_tools = (
+                json.loads(tools_override)
+                if isinstance(tools_override, str)
+                else list(tools_override)
+            )
+        except Exception:
+            enabled_tools = []
+
+    if not enabled_tools:
+        enabled_tools = await get_enabled_tools()
 
     # ── Resolve system prompt (DB → metadata → default) ─────────────────────
     if not system_prompt:
@@ -321,26 +329,26 @@ async def entrypoint(ctx: agents.JobContext):
         if trunk_id:
             await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
 
-            # try:
-            #     await ctx.api.sip.create_sip_participant(
-            #         api.CreateSIPParticipantRequest(
-            #             room_name=ctx.room.name,
-            #             sip_trunk_id=trunk_id,
-            #             sip_call_to=phone_number,
-            #             participant_identity=f"sip_{phone_number}",
-            #             wait_until_answered=True,
-            #         )
-            #     )
+            try:
+                await ctx.api.sip.create_sip_participant(
+                    api.CreateSIPParticipantRequest(
+                        room_name=ctx.room.name,
+                        sip_trunk_id=trunk_id,
+                        sip_call_to=phone_number,
+                        participant_identity=f"sip_{phone_number}",
+                        wait_until_answered=True,
+                    )
+                )
 
-            #     await _log(
-            #         "info",
-            #         f"Call ANSWERED — {phone_number} picked up, starting AI session now"
-            #     )
+                await _log(
+                    "info",
+                    f"Call ANSWERED — {phone_number} picked up, starting AI session now"
+                )
 
-            # except Exception as exc:
-            #     await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
-            #     ctx.shutdown()
-            #     return
+            except Exception as exc:
+                await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+                ctx.shutdown()
+                return
 
         else:
             await _log(
@@ -359,17 +367,24 @@ async def entrypoint(ctx: agents.JobContext):
         from livekit.agents import RoomOptions as _RO
         _session_kwargs = dict(
             room=ctx.room,
-            agent=OutboundAssistant(instructions=system_prompt),
+            agent=OutboundAssistant(instructions=""),
             room_options=_RO(input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())),
         )
     else:
         _session_kwargs = dict(
             room=ctx.room,
-            agent=OutboundAssistant(instructions=system_prompt),
+            agent=OutboundAssistant(instructions=""),
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
 
     await session.start(**_session_kwargs)
+    await asyncio.sleep(2)
+    # await asyncio.sleep(2)
+
+    # await session.say(
+    #     greeting,
+    #     allow_interruptions=True
+    # )
     await _log("info", "Gemini session started")
 
     def _on_user_input_transcribed(ev) -> None:
@@ -407,50 +422,66 @@ async def entrypoint(ctx: agents.JobContext):
     # track_published handled via room event (local participant lacks .on in rtc 1.1.8)
 
     # ── Optional S3 recording via LiveKit Egress ─────────────────────────────
-    if phone_number:
-        _aws_key     = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
-        _aws_secret  = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
-        _aws_bucket  = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
-        _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
-        _s3_region   = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
-        if _aws_key and _aws_secret and _aws_bucket:
-            try:
-                _recording_path = f"recordings/{ctx.room.name}.ogg"
-                _egress_req = api.RoomCompositeEgressRequest(
-                    room_name=ctx.room.name, audio_only=True,
-                    file_outputs=[api.EncodedFileOutput(
-                        file_type=api.EncodedFileType.OGG, filepath=_recording_path,
-                        s3=api.S3Upload(
-                            access_key=_aws_key, secret=_aws_secret,
-                            bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint,
-                        ),
-                    )],
-                )
-                _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
-                _s3_ep = _s3_endpoint.rstrip("/")
-                tool_ctx.recording_url = (
-                    f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
-                    if _s3_ep else f"s3://{_aws_bucket}/{_recording_path}"
-                )
-                await _log("info", f"Recording started: egress={_egress.egress_id}")
-            except Exception as _exc:
-                await _log_exception("Recording start failed (non-fatal)", _exc, "warning")
+    # if phone_number:
+    #     _aws_key     = os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID", "")
+    #     _aws_secret  = os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    #     _aws_bucket  = os.getenv("S3_BUCKET") or os.getenv("AWS_BUCKET_NAME", "")
+    #     _s3_endpoint = os.getenv("S3_ENDPOINT_URL") or os.getenv("S3_ENDPOINT", "")
+    #     _s3_region   = os.getenv("S3_REGION") or os.getenv("AWS_REGION", "ap-northeast-1")
+    #     if _aws_key and _aws_secret and _aws_bucket:
+    #         try:
+    #             _recording_path = f"recordings/{ctx.room.name}.ogg"
+    #             _egress_req = api.RoomCompositeEgressRequest(
+    #                 room_name=ctx.room.name, audio_only=True,
+    #                 file_outputs=[api.EncodedFileOutput(
+    #                     file_type=api.EncodedFileType.OGG, filepath=_recording_path,
+    #                     s3=api.S3Upload(
+    #                         access_key=_aws_key, secret=_aws_secret,
+    #                         bucket=_aws_bucket, region=_s3_region, endpoint=_s3_endpoint,
+    #                     ),
+    #                 )],
+    #             )
+    #             _egress = await ctx.api.egress.start_room_composite_egress(_egress_req)
+    #             _s3_ep = _s3_endpoint.rstrip("/")
+    #             tool_ctx.recording_url = (
+    #                 f"{_s3_ep}/{_aws_bucket}/{_recording_path}"
+    #                 if _s3_ep else f"s3://{_aws_bucket}/{_recording_path}"
+    #             )
+    #             await _log("info", f"Recording started: egress={_egress.egress_id}")
+    #         except Exception as _exc:
+    #             await _log_exception("Recording start failed (non-fatal)", _exc, "warning")
 
     # ── Greeting (Rule 4) ────────────────────────────────────────────────────
     # gemini-3.1 and gemini-2.5 native-audio speak autonomously from system prompt.
     # generate_reply() is blocked by the plugin for these models — skip entirely.
     _active_model = os.getenv("GEMINI_MODEL", "")
-    greeting = (
-        f"The call just connected. Greet the lead and ask if you're speaking with {lead_name}."
-        if phone_number else
-        "Hello, this is OutboundAI. How can I help you today?"
-    )
+    
+    # ── Initial Greeting ────────────────────────────────────
 
-    try:
-        await session.generate_reply(instructions=greeting)
-        await _log("info", "Greeting generated")
-    except Exception as _gr_exc:
-        await _log_exception("generate_reply failed", _gr_exc, "warning")
+    # greeting = (
+    #     f"Hi, am I speaking with {lead_name}?"
+    #     if phone_number else
+    #     "Hello, how can I help you today?"
+    # )
+
+    # await asyncio.sleep(0.8)
+
+    # try:
+    #     await session.say(
+    #         greeting,
+    #         allow_interruptions=True
+    #     )
+
+    #     await _log("info", f"Greeting spoken: {greeting}")
+
+    # except Exception as exc:
+    #     await _log_exception("Initial greeting failed", exc, "warning")
+
+    # try:
+    #     await session.generate_reply(instructions=greeting)
+    #     await _log("info", "Greeting generated")
+    # except Exception as _gr_exc:
+    #     await _log_exception("generate_reply failed", _gr_exc, "warning")
 
     # ── Keep session alive until SIP participant actually leaves (Rule 2) ────
     # Watch participant_disconnected for the specific SIP identity.
@@ -459,9 +490,20 @@ async def entrypoint(ctx: agents.JobContext):
         _sip_identity = f"sip_{phone_number}"
         _disconnect_event = asyncio.Event()
 
+        async def _delayed_disconnect():
+            await asyncio.sleep(8)
+
+            still_exists = any(
+                p.identity == _sip_identity
+                for p in ctx.room.remote_participants.values()
+            )
+
+            if not still_exists:
+                _disconnect_event.set()
+
         def _on_participant_disconnected(participant: rtc.RemoteParticipant):
             if participant.identity == _sip_identity:
-                _disconnect_event.set()
+                asyncio.create_task(_delayed_disconnect())
 
         def _on_disconnected():
             _disconnect_event.set()
@@ -475,10 +517,18 @@ async def entrypoint(ctx: agents.JobContext):
             await _log("warning", "Call reached 1-hour safety timeout — shutting down")
 
         await _log("info", f"SIP participant disconnected — ending session for {phone_number}")
-        await session.aclose()
+
+        try:
+            await asyncio.sleep(2)
+            await session.aclose()
+        except:
+            pass
+
     else:
         _done = asyncio.Event()
+
         ctx.room.on("disconnected", lambda: _done.set())
+
         try:
             await asyncio.wait_for(_done.wait(), timeout=3600)
         except asyncio.TimeoutError:

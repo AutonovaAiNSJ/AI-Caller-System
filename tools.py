@@ -93,7 +93,8 @@ class AppointmentTools(llm.ToolContext):
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
         try:
-            await self.ctx.room.disconnect()
+            await asyncio.sleep(1)
+            await self.ctx.shutdown()   
         except Exception:
             pass
         return "Call ended."
