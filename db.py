@@ -36,7 +36,7 @@ SENSITIVE_KEYS = {
     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "GOOGLE_API_KEY",
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
-    "DEEPGRAM_API_KEY",
+    "DEEPGRAM_API_KEY", "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON",
 }
 
 
@@ -96,6 +96,7 @@ async def get_all_settings() -> dict:
         "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
+        "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "GOOGLE_CALENDAR_ID", "GOOGLE_CALENDAR_SLOT_DURATION",
         "ENABLED_TOOLS",
     ]
     out: dict = {}
@@ -207,6 +208,20 @@ async def insert_appointment(name: str, phone: str, date: str, time: str, servic
         "status": "booked", "created_at": datetime.now().isoformat(),
     }).execute()
     return booking_id
+
+
+async def update_appointment_gcal(booking_id: str, event_id: str, event_link: str) -> None:
+    """Associate Google Calendar Event ID and link with the local appointment record."""
+    try:
+        db = await _adb()
+        prefix = booking_id.lower()
+        await db.table("appointments").update({
+            "gcal_event_id": event_id,
+            "gcal_event_link": event_link
+        }).like("id", f"{prefix}%").execute()
+    except Exception as exc:
+        # Don't fail the booking flow if updating local logs encounters a DB issue
+        print(f"⚠️ Failed to update appointment with Google Calendar info: {exc}")
 
 
 async def check_slot(date: str, time: str) -> bool:

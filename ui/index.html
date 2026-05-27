@@ -610,6 +610,27 @@ input[type=file]{padding:6px;border:1px dashed var(--border);cursor:pointer}
       <button class="btn btn-secondary btn-sm" onclick="saveGroup('calcom')">💾 Save Cal.com</button>
     </div>
     <div class="settings-section">
+      <div class="settings-section-title">📅 Google Calendar (optional)</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Service Account JSON <span id="cfg-gcal-json" class="cfg-badge"></span></label>
+          <div class="pass-wrap">
+            <input id="s-gcal-json" type="password" placeholder='{"type": "service_account", ...}'/>
+            <button class="eye-btn" onclick="togglePass('s-gcal-json',this)">👁</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Calendar ID <span id="cfg-gcal-id" class="cfg-badge"></span></label>
+          <input id="s-gcal-id" type="text" placeholder="your-calendar-id@group.calendar.google.com or primary"/>
+        </div>
+        <div class="form-group">
+          <label>Slot Duration (minutes)</label>
+          <input id="s-gcal-duration" type="number" value="30" min="15" max="120"/>
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="saveGroup('gcal')">💾 Save Google Calendar</button>
+    </div>
+    <div class="settings-section">
       <div class="settings-section-title">🔧 Tool Toggles (blank = all enabled)</div>
       <div class="tool-grid">
         <div class="check-row"><input type="checkbox" class="tool-cb" value="check_availability" checked/><label style="text-transform:none;letter-spacing:0;font-weight:400">check_availability</label></div>
@@ -1278,6 +1299,11 @@ async function loadSettings() {
     cfg('cfg-cal-key', 'CALCOM_API_KEY');
     fill('s-cal-event', 'CALCOM_EVENT_TYPE_ID');
     fill('s-cal-tz', 'CALCOM_TIMEZONE');
+    cfg('cfg-gcal-json', 'GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON');
+    fill('s-gcal-json', 'GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON');
+    cfg('cfg-gcal-id', 'GOOGLE_CALENDAR_ID');
+    fill('s-gcal-id', 'GOOGLE_CALENDAR_ID');
+    fill('s-gcal-duration', 'GOOGLE_CALENDAR_SLOT_DURATION');
     // Tool toggles
     const enabledRaw = s['ENABLED_TOOLS']?.value || '';
     if (enabledRaw) {
@@ -1299,6 +1325,7 @@ async function saveGroup(group) {
     twilio:  { TWILIO_ACCOUNT_SID: 's-twilio-sid', TWILIO_AUTH_TOKEN: 's-twilio-tok', TWILIO_FROM_NUMBER: 's-twilio-from' },
     s3:      { S3_ACCESS_KEY_ID: 's-s3-key', S3_SECRET_ACCESS_KEY: 's-s3-secret', S3_ENDPOINT_URL: 's-s3-endpoint', S3_REGION: 's-s3-region', S3_BUCKET: 's-s3-bucket' },
     calcom:  { CALCOM_API_KEY: 's-cal-key', CALCOM_EVENT_TYPE_ID: 's-cal-event', CALCOM_TIMEZONE: 's-cal-tz' },
+    gcal:    { GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON: 's-gcal-json', GOOGLE_CALENDAR_ID: 's-gcal-id', GOOGLE_CALENDAR_SLOT_DURATION: 's-gcal-duration' },
   };
   const fields = map[group];
   if (!fields) return;

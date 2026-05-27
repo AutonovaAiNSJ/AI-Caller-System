@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
 ALTER TABLE campaigns DISABLE ROW LEVEL SECURITY;
 
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calcom_booking_uid TEXT;
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS gcal_event_id TEXT;
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS gcal_event_link TEXT;
 
 CREATE TABLE IF NOT EXISTS contact_memory (
     id TEXT PRIMARY KEY,
