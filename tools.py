@@ -11,7 +11,9 @@ from db import (
     check_slot, get_next_available, insert_appointment, log_call, log_error,
     get_calls_by_phone, get_appointments_by_phone,
     add_contact_memory, get_contact_memory, compress_contact_memory,
+    get_setting, update_appointment_gcal,
 )
+from gcal import GoogleCalendarManager
 
 logger = logging.getLogger("appointment-tools")
 
@@ -56,11 +58,33 @@ class AppointmentTools(llm.ToolContext):
         Returns 'available' or 'unavailable: next available slot is <slot>'.
         """
         try:
-            if await check_slot(date, time):
-                return "available"
-            next_slot = await get_next_available(date, time)
-            return f"unavailable: next available slot is {next_slot}"
-        except Exception:
+            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
+            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
+            duration_str = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
+            try:
+                duration_mins = int(duration_str)
+            except ValueError:
+                duration_mins = 30
+
+            if gcal_json:
+                manager = GoogleCalendarManager(gcal_json, gcal_id)
+                loop = asyncio.get_running_loop()
+                is_avail = await loop.run_in_executor(
+                    None, lambda: manager.is_slot_available(date, time, duration_mins)
+                )
+                if is_avail:
+                    return "available"
+                next_slot = await loop.run_in_executor(
+                    None, lambda: manager.get_next_available(date, time, duration_mins)
+                )
+                return f"unavailable: next available slot is {next_slot}"
+            else:
+                if await check_slot(date, time):
+                    return "available"
+                next_slot = await get_next_available(date, time)
+                return f"unavailable: next available slot is {next_slot}"
+        except Exception as exc:
+            logger.error("Error checking availability: %s", exc)
             return "Unable to check availability right now — please suggest a date and I will confirm."
 
     @llm.function_tool
@@ -72,8 +96,29 @@ class AppointmentTools(llm.ToolContext):
         """
         try:
             booking_id = await insert_appointment(name, phone, date, time, service)
+            
+            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
+            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
+            duration_str = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
+            try:
+                duration_mins = int(duration_str)
+            except ValueError:
+                duration_mins = 30
+
+            if gcal_json:
+                manager = GoogleCalendarManager(gcal_json, gcal_id)
+                loop = asyncio.get_running_loop()
+                event_id, event_link = await loop.run_in_executor(
+                    None,
+                    lambda: manager.book_event(name, phone, date, time, service, duration_mins)
+                )
+                if event_id:
+                    await update_appointment_gcal(booking_id, event_id, event_link)
+                    return f"Confirmed! Synced to Google Calendar. Booking ID: {booking_id}. See you on {date} at {time} for {service}."
+            
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
-        except Exception:
+        except Exception as exc:
+            logger.error("Error booking appointment: %s", exc)
             return "Technical issue saving the booking. Our team will confirm shortly."
 
     @llm.function_tool
