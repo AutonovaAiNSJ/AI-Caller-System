@@ -11,6 +11,8 @@ import secrets
 import ssl
 import certifi
 import aiohttp
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +58,7 @@ except ImportError:
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
 _running_campaigns: set[str] = set()
 _auth_warning_logged = False
+_active_calls: dict[str, dict] = {}
 
 
 def _is_local_request(request: Request) -> bool:
@@ -132,6 +135,47 @@ async def _shutdown():
 async def eff(key: str) -> str:
     val = await get_setting(key, "")
     return val if val else os.getenv(key, "")
+
+
+def _iso_to_epoch(value: str) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _active_call_started(room_name: str, phone: str, lead_name: str = "there", status: str = "dispatching") -> None:
+    now = time.time()
+    _active_calls[room_name] = {
+        "room_name": room_name,
+        "phone": phone,
+        "lead_name": lead_name or "there",
+        "status": status,
+        "started_at": now,
+        "updated_at": now,
+        "ended_at": None,
+        "last_event": status,
+    }
+
+
+def _active_call_update(room_name: str, status: Optional[str] = None, last_event: Optional[str] = None) -> None:
+    call = _active_calls.get(room_name)
+    if not call:
+        return
+    now = time.time()
+    if status:
+        call["status"] = status
+        if status in ("ended", "failed"):
+            call["ended_at"] = call.get("ended_at") or now
+    if last_event:
+        call["last_event"] = last_event
+    call["updated_at"] = now
+
+
+def _active_call_failed(room_name: str, last_event: str) -> None:
+    _active_call_update(room_name, "failed", last_event)
 
 
 def livekit_client_session() -> aiohttp.ClientSession:
@@ -281,11 +325,13 @@ async def api_dispatch_call(req: CallRequest):
 
     lk = None
     session = None
+    _active_call_started(room_name, phone, req.lead_name, "dispatching")
     try:
         from livekit import api as lk_api
         session = livekit_client_session()
         lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
+        _active_call_update(room_name, "dialing", "LiveKit room created; agent dispatch requested")
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(
                 agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
@@ -305,6 +351,7 @@ async def api_dispatch_call(req: CallRequest):
         return {"status": "dispatched", "room": room_name, "phone": phone}
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
+        _active_call_failed(room_name, f"Dispatch failed: {exc}")
         raise HTTPException(500, f"Dispatch failed: {exc}")
     finally:
         try:
@@ -324,6 +371,79 @@ async def api_dispatch_call(req: CallRequest):
 @app.get("/api/calls")
 async def api_get_calls(page: int = 1, limit: int = 20):
     return await get_all_calls(page=page, limit=limit)
+
+
+@app.get("/api/calls/active")
+async def api_get_active_calls():
+    now = time.time()
+    transcripts = await get_recent_transcripts(limit=200)
+    transcript_by_room: dict[str, dict] = {}
+    for row in transcripts:
+        room = row.get("room_name")
+        if room and room not in transcript_by_room:
+            transcript_by_room[room] = row
+        if room and room not in _active_calls:
+            transcript_ts = _iso_to_epoch(row.get("created_at") or "")
+            if transcript_ts and now - transcript_ts <= 60:
+                phone_guess = ""
+                if room.startswith("call-"):
+                    phone_guess = "+" + room.split("-")[1]
+                elif room.startswith("camp-"):
+                    parts = room.split("-")
+                    phone_guess = "+" + parts[2] if len(parts) > 2 else ""
+                _active_calls[room] = {
+                    "room_name": room,
+                    "phone": phone_guess,
+                    "lead_name": "there",
+                    "status": "connected",
+                    "started_at": transcript_ts,
+                    "updated_at": transcript_ts,
+                    "ended_at": None,
+                    "last_event": "Recent transcript activity",
+                }
+
+    recent_logs = await get_all_calls(page=1, limit=50)
+    out = []
+    for room, call in list(_active_calls.items()):
+        ended_at = call.get("ended_at")
+        if ended_at and now - float(ended_at) > 60:
+            _active_calls.pop(room, None)
+            continue
+
+        status = call.get("status") or "dispatching"
+        last_event = call.get("last_event") or status
+        latest_transcript = transcript_by_room.get(room)
+        snippet = ""
+        if latest_transcript:
+            snippet = latest_transcript.get("message") or ""
+            if status not in ("ended", "failed"):
+                status = "connected"
+                last_event = f"Latest transcript from {latest_transcript.get('speaker') or 'call'}"
+
+        started_at = float(call.get("started_at") or now)
+        for log in recent_logs:
+            same_phone = (log.get("phone_number") or log.get("phone")) == call.get("phone")
+            log_ts = _iso_to_epoch(log.get("timestamp") or "")
+            if same_phone and log_ts and log_ts >= started_at - 5:
+                status = "ended"
+                last_event = f"Call logged as {log.get('outcome') or 'ended'}"
+                call["ended_at"] = call.get("ended_at") or now
+                break
+
+        duration = int((call.get("ended_at") or now) - started_at)
+        out.append({
+            "room_name": room,
+            "phone": call.get("phone") or "",
+            "lead_name": call.get("lead_name") or "there",
+            "status": status,
+            "duration_seconds": max(duration, 0),
+            "last_event": last_event,
+            "last_transcript_snippet": snippet[:240],
+            "transcript_available": bool(latest_transcript),
+        })
+
+    out.sort(key=lambda c: _active_calls.get(c["room_name"], {}).get("started_at", 0), reverse=True)
+    return out
 
 
 @app.patch("/api/calls/{call_id}/notes")
@@ -609,8 +729,10 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools") is not None: metadata["tools_override"] = profile["enabled_tools"]
+        _active_call_started(room_name, contact["phone"], contact.get("lead_name", "there"), "dispatching")
         logger.info("Campaign room create: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
+        _active_call_update(room_name, "dialing", "Campaign room created; agent dispatch requested")
         logger.info("Campaign agent dispatch: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(
@@ -621,6 +743,7 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
         return True, ""
     except Exception as exc:
         logger.error("Campaign dispatch error for %s: %s", contact.get("phone"), exc)
+        _active_call_failed(room_name, f"Campaign dispatch failed: {exc}")
         await log_error("server", "Campaign dispatch failed", f"room={room_name}; phone={contact.get('phone')}; error={exc}", "error")
         return False, str(exc)
 
