@@ -34,7 +34,7 @@ from db import (
     SENSITIVE_KEYS, cancel_appointment, clear_errors, create_campaign, delete_campaign,
     get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
-    delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign,
+    delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign, get_default_agent_profile,
     get_contacts, get_errors, get_logs, get_recent_transcripts, get_setting, get_stats, init_db, log_error,
     save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
 )
@@ -105,7 +105,7 @@ class AgentProfileRequest(BaseModel):
     voice: str = "Aoede"
     model: str = "gemini-3.1-flash-live-preview"
     system_prompt: Optional[str] = None
-    enabled_tools: str = "[]"
+    enabled_tools: Optional[str] = None
     is_default: bool = False
 
 
@@ -166,10 +166,12 @@ async def api_dispatch_call(req: CallRequest):
     effective_tools  = None
     profile_name = None
     prompt_source = "per_call_override" if req.system_prompt else "none"
+    profile_source = "none"
 
     if req.agent_profile_id:
         profile = await get_agent_profile(req.agent_profile_id)
         if profile:
+            profile_source = "selected"
             profile_name = profile.get("name")
             if not effective_prompt and profile.get("system_prompt"):
                 effective_prompt = profile["system_prompt"]
@@ -177,6 +179,21 @@ async def api_dispatch_call(req: CallRequest):
             effective_voice = profile.get("voice")
             effective_model = profile.get("model")
             effective_tools = profile.get("enabled_tools")
+        else:
+            await log_error("server", "Agent profile missing; using default fallback", f"profile_id={req.agent_profile_id}", "warning")
+    if not req.agent_profile_id or profile_source == "none":
+        profile = await get_default_agent_profile()
+        if profile:
+            profile_source = "default"
+            profile_name = profile.get("name")
+            if not effective_prompt and profile.get("system_prompt"):
+                effective_prompt = profile["system_prompt"]
+                prompt_source = "default_agent_profile"
+            effective_voice = effective_voice or profile.get("voice")
+            effective_model = effective_model or profile.get("model")
+            effective_tools = profile.get("enabled_tools")
+        else:
+            profile_source = "built_in_fallback"
 
     if not effective_prompt:
         effective_prompt = await get_setting("system_prompt", "") or None
@@ -189,15 +206,16 @@ async def api_dispatch_call(req: CallRequest):
         "business_name": req.business_name,
         "service_type":  req.service_type,
         "system_prompt": effective_prompt,
-        "agent_profile_id": req.agent_profile_id,
+        "agent_profile_id": profile.get("id") if profile_source in ("selected", "default") else req.agent_profile_id,
         "agent_profile_name": profile_name,
+        "agent_profile_source": profile_source,
         "system_prompt_override_present": bool(req.system_prompt),
         "prompt_source": prompt_source,
         "canonical_phone": phone,
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
     if effective_model:  metadata["model_override"] = effective_model
-    if effective_tools:  metadata["tools_override"] = effective_tools
+    if effective_tools is not None: metadata["tools_override"] = effective_tools
 
     lk = None
     session = None
@@ -216,8 +234,8 @@ async def api_dispatch_call(req: CallRequest):
             f"Call dispatched to {phone}",
             (
                 f"room={room_name}; phone={phone}; agent_profile_id={req.agent_profile_id or ''}; "
-                f"prompt_source={prompt_source}; system_prompt_override_present={bool(req.system_prompt)}; "
-                f"tools_override_present={bool(effective_tools)}; lead_name={req.lead_name}; "
+                f"profile_source={profile_source}; prompt_source={prompt_source}; system_prompt_override_present={bool(req.system_prompt)}; "
+                f"tools_override_present={effective_tools is not None}; lead_name={req.lead_name}; "
                 f"business_name={req.business_name}; service_type={req.service_type}"
             ),
             "info",
@@ -489,6 +507,10 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
     try:
         saved_prompt = prompt or (await get_setting("system_prompt", "")) or None
         prompt_source = "campaign" if prompt else ("global" if saved_prompt else "default")
+        profile_source = "campaign_profile" if profile else "none"
+        if not profile:
+            profile = await get_default_agent_profile()
+            profile_source = "default" if profile else "built_in_fallback"
         metadata: dict = {
             "phone_number":  contact["phone"],
             "lead_name":     contact.get("lead_name", "there"),
@@ -497,6 +519,7 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             "system_prompt": saved_prompt,
             "agent_profile_id": profile.get("id") if profile else None,
             "agent_profile_name": profile.get("name") if profile else None,
+            "agent_profile_source": profile_source,
             "system_prompt_override_present": bool(prompt),
             "prompt_source": prompt_source,
             "canonical_phone": contact["phone"],
@@ -507,7 +530,7 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
                 metadata["prompt_source"] = "agent_profile"
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
-            if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
+            if profile.get("enabled_tools") is not None: metadata["tools_override"] = profile["enabled_tools"]
         logger.info("Campaign room create: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
         logger.info("Campaign agent dispatch: room=%s phone=%s", room_name, contact.get("phone"))
@@ -552,6 +575,8 @@ async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> Non
     profile = None
     if agent_profile_id:
         profile = await get_agent_profile(agent_profile_id)
+        if not profile:
+            await log_error("server", "Campaign agent profile missing; using default fallback", f"campaign_id={campaign_id}; profile_id={agent_profile_id}", "warning")
 
     url    = await eff("LIVEKIT_URL")
     key    = await eff("LIVEKIT_API_KEY")

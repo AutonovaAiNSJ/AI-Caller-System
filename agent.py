@@ -28,7 +28,7 @@ from livekit.plugins import noise_cancellation
 
 from db import init_db, log_error, get_enabled_tools, save_transcript
 from prompts import build_prompt
-from tools import AppointmentTools
+from tools import AppointmentTools, DEFAULT_TOOL_NAMES, MANDATORY_BOOKING_TOOLS
 
 load_dotenv(".env", override=False)  # VPS env vars always win — .env only for local dev
 logging.basicConfig(level=logging.INFO)
@@ -85,6 +85,41 @@ def _safe_preview(text: Optional[str], limit: int = 200) -> str:
     if not text:
         return ""
     return " ".join(str(text).split())[:limit]
+
+
+def _parse_tool_names(raw) -> tuple[Optional[list[str]], str]:
+    if raw is None:
+        return None, "not_supplied"
+    if isinstance(raw, list):
+        return [str(t).strip() for t in raw if str(t).strip()], "list"
+    text = str(raw).strip()
+    if text == "":
+        return None, "blank"
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(t).strip() for t in parsed if str(t).strip()], "json"
+    except Exception:
+        pass
+    return [t.strip() for t in text.split(",") if t.strip()], "csv"
+
+
+def _dedupe_tool_names(names: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for name in names:
+        if name in DEFAULT_TOOL_NAMES and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _booking_workflow_active(system_prompt: str) -> bool:
+    disabled_flag = os.getenv("DISABLE_BOOKING_TOOLS", "").lower() in ("1", "true", "yes")
+    if disabled_flag:
+        return False
+    text = (system_prompt or "").lower()
+    return any(word in text for word in ("book", "appointment", "schedule", "calendar", "slot"))
 
 
 def load_db_settings_to_env() -> None:
@@ -224,8 +259,10 @@ async def entrypoint(ctx: agents.JobContext):
     tools_override = None
     agent_profile_id: Optional[str] = None
     agent_profile_name: Optional[str] = None
+    agent_profile_source = "metadata"
     prompt_override_present = False
     prompt_source = "default"
+    tools_override_supplied = False
 
     raw_meta = ctx.job.metadata or ""
     try:
@@ -238,8 +275,10 @@ async def entrypoint(ctx: agents.JobContext):
         voice_override = meta.get("voice_override")
         model_override = meta.get("model_override")
         tools_override = meta.get("tools_override")
+        tools_override_supplied = "tools_override" in meta
         agent_profile_id = meta.get("agent_profile_id")
         agent_profile_name = meta.get("agent_profile_name")
+        agent_profile_source = meta.get("agent_profile_source") or "metadata"
         prompt_override_present = bool(meta.get("system_prompt_override_present"))
         prompt_source = meta.get("prompt_source") or ("per_call_override" if prompt_override_present else "metadata_or_global")
     except Exception as exc:
@@ -260,21 +299,6 @@ async def entrypoint(ctx: agents.JobContext):
     #         enabled_tools = []
     # if not enabled_tools:
     #     enabled_tools = await get_enabled_tools()
-    enabled_tools = []
-
-    if tools_override:
-        try:
-            enabled_tools = (
-                json.loads(tools_override)
-                if isinstance(tools_override, str)
-                else list(tools_override)
-            )
-        except Exception:
-            enabled_tools = []
-
-    if not enabled_tools:
-        enabled_tools = await get_enabled_tools()
-
     # ── Resolve system prompt (DB → metadata → default) ─────────────────────
     if system_prompt:
         prompt_source = prompt_source or "metadata"
@@ -295,6 +319,35 @@ async def entrypoint(ctx: agents.JobContext):
     )
     system_prompt = f"{system_prompt.rstrip()}{MANDATORY_TOOL_CONTRACT}"
 
+    # Tool precedence: mandatory booking tools are injected after the selected source.
+    # Source order is global defaults, then profile/campaign/per-call metadata overrides.
+    global_tool_names = await get_enabled_tools()
+    override_tool_names, override_parse_source = _parse_tool_names(tools_override) if tools_override_supplied else (None, "not_supplied")
+    if tools_override_supplied:
+        base_tool_names = override_tool_names or []
+        tool_source = f"metadata_override:{override_parse_source}"
+    elif global_tool_names is not None:
+        base_tool_names = global_tool_names
+        tool_source = "global_setting"
+    else:
+        base_tool_names = list(DEFAULT_TOOL_NAMES)
+        tool_source = "built_in_default"
+
+    booking_active = _booking_workflow_active(system_prompt)
+    mandatory_injections = []
+    if booking_active:
+        for name in MANDATORY_BOOKING_TOOLS:
+            if name not in base_tool_names:
+                base_tool_names.append(name)
+                mandatory_injections.append(name)
+    enabled_tools = _dedupe_tool_names(base_tool_names)
+    if booking_active:
+        missing_mandatory = [name for name in MANDATORY_BOOKING_TOOLS if name not in enabled_tools]
+        if missing_mandatory:
+            await _log("warning", "Mandatory booking tools missing after resolution", ",".join(missing_mandatory))
+    else:
+        system_prompt = f"{system_prompt.rstrip()}\n\nBooking actions unavailable in this session. Do not claim availability or confirmed bookings.\n"
+
     tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
     transcript_saved = False
     call_answered = False
@@ -311,10 +364,12 @@ async def entrypoint(ctx: agents.JobContext):
         "Agent prompt/tools resolved",
         (
             f"room={ctx.room.name}; profile_id={agent_profile_id or ''}; "
-            f"profile_name={agent_profile_name or ''}; prompt_source={prompt_source}; "
+            f"profile_name={agent_profile_name or ''}; profile_source={agent_profile_source}; prompt_source={prompt_source}; "
             f"agent_display_name={agent_display_name}; business_name={business_name}; "
             f"service_type={service_type}; canonical_phone={phone_number or ''}; "
-            f"enabled_tools={enabled_tools}; "
+            f"resolved_tools={enabled_tools}; tool_source={tool_source}; "
+            f"tools_override_supplied={tools_override_supplied}; mandatory_injections={mandatory_injections}; "
+            f"booking_workflow_active={booking_active}; "
             f"model={os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-live-preview')}; "
             f"voice={os.getenv('GEMINI_TTS_VOICE', 'Aoede')}; "
             f"override_prompt_present={prompt_override_present}; "
@@ -437,7 +492,10 @@ async def entrypoint(ctx: agents.JobContext):
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     await _log("info", f"Building AI session — model={gemini_model}")
     active_tools = tool_ctx.build_tool_list(enabled_tools)
-    await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
+    loaded_tool_names = [t.__name__ for t in active_tools]
+    await _log("info", f"Tools loaded: {loaded_tool_names}")
+    if loaded_tool_names != enabled_tools:
+        await _log("warning", "Resolved tool names differ from loaded tools", f"resolved={enabled_tools}; loaded={loaded_tool_names}")
     try:
         session = _build_session(tools=active_tools, system_prompt=system_prompt)
     except Exception as exc:

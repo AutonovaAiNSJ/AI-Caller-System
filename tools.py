@@ -18,6 +18,14 @@ from gcal import GoogleCalendarManager
 logger = logging.getLogger("appointment-tools")
 
 
+MANDATORY_BOOKING_TOOLS = ["check_availability", "book_appointment", "end_call"]
+DEFAULT_TOOL_NAMES = [
+    "check_availability", "book_appointment", "end_call",
+    "transfer_to_human", "send_sms_confirmation", "lookup_contact",
+    "remember_details", "book_calcom", "cancel_calcom",
+]
+
+
 async def _log(msg: str, detail: str = "", level: str = "info") -> None:
     try:
         await log_error("agent", msg, detail, level)
@@ -44,14 +52,12 @@ class AppointmentTools(llm.ToolContext):
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
-        """Return tool methods filtered by the enabled list. Empty list = all enabled."""
+        """Return tool methods for the final resolved tool-name list."""
         all_methods = [
             self.check_availability, self.book_appointment, self.end_call,
             self.transfer_to_human, self.send_sms_confirmation, self.lookup_contact,
             self.remember_details, self.book_calcom, self.cancel_calcom,
         ]
-        if not enabled:
-            return all_methods
         name_map = {m.__name__: m for m in all_methods}
         return [name_map[n] for n in enabled if n in name_map]
 
