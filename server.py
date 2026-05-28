@@ -44,8 +44,6 @@ load_dotenv(".env", override=False)  # VPS env vars always win — .env only for
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
-init_db()
-
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -59,6 +57,7 @@ app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
 
 @app.on_event("startup")
 async def _startup():
+    init_db()
     if _scheduler:
         _scheduler.start()
         await _reschedule_all_campaigns()
@@ -73,6 +72,18 @@ async def _shutdown():
 async def eff(key: str) -> str:
     val = await get_setting(key, "")
     return val if val else os.getenv(key, "")
+
+
+def livekit_client_session() -> aiohttp.ClientSession:
+    """Create an aiohttp session for LiveKit API calls with TLS verification on by default."""
+    allow_insecure = os.getenv("ALLOW_INSECURE_SSL", "false").lower() in ("1", "true", "yes")
+    if allow_insecure:
+        logger.warning("ALLOW_INSECURE_SSL is enabled; LiveKit TLS certificate verification is disabled")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl.create_default_context()))
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -185,12 +196,11 @@ async def api_dispatch_call(req: CallRequest):
     if effective_model:  metadata["model_override"] = effective_model
     if effective_tools:  metadata["tools_override"] = effective_tools
 
+    lk = None
+    session = None
     try:
         from livekit import api as lk_api
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+        session = livekit_client_session()
         lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
         await lk.agent_dispatch.create_dispatch(
@@ -198,8 +208,6 @@ async def api_dispatch_call(req: CallRequest):
                 agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
             )
         )
-        await lk.aclose()
-        await session.close()
         await log_error(
             "server",
             f"Call dispatched to {phone}",
@@ -215,6 +223,17 @@ async def api_dispatch_call(req: CallRequest):
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
         raise HTTPException(500, f"Dispatch failed: {exc}")
+    finally:
+        try:
+            if lk:
+                await lk.aclose()
+        except Exception:
+            pass
+        try:
+            if session:
+                await session.close()
+        except Exception:
+            pass
 
 
 # ── Calls ─────────────────────────────────────────────────────────────────────
@@ -335,12 +354,11 @@ async def api_setup_trunk():
     if not all([url, key, secret, sip_domain, username, password, phone]):
         raise HTTPException(400, "Configure LiveKit and Vobiz credentials in Settings first.")
 
+    lk = None
+    session = None
     try:
         from livekit import api as lk_api
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+        session = livekit_client_session()
         lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         trunk = await lk.sip.create_sip_outbound_trunk(
             lk_api.CreateSIPOutboundTrunkRequest(
@@ -356,11 +374,20 @@ async def api_setup_trunk():
         trunk_id = trunk.sip_trunk_id
         await set_setting("OUTBOUND_TRUNK_ID", trunk_id)
         os.environ["OUTBOUND_TRUNK_ID"] = trunk_id
-        await lk.aclose()
-        await session.close()
         return {"status": "created", "trunk_id": trunk_id}
     except Exception as exc:
         raise HTTPException(500, f"Trunk creation failed: {exc}")
+    finally:
+        try:
+            if lk:
+                await lk.aclose()
+        except Exception:
+            pass
+        try:
+            if session:
+                await session.close()
+        except Exception:
+            pass
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
@@ -478,6 +505,7 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
+        await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(
                 agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
@@ -511,10 +539,7 @@ async def _run_campaign(campaign_id: str) -> None:
         return
 
     from livekit import api as lk_api_module
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
+    session = livekit_client_session()
 
     ok_count = fail_count = 0
     try:
@@ -693,4 +718,5 @@ async def simulate_call():
     }
 
 
-uvicorn.run(app, host="0.0.0.0", port=port)
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=port)
