@@ -11,7 +11,9 @@ from db import (
     check_slot, get_next_available, insert_appointment, log_call, log_error,
     get_calls_by_phone, get_appointments_by_phone,
     add_contact_memory, get_contact_memory, compress_contact_memory,
+    get_setting, update_appointment_gcal,
 )
+from gcal import GoogleCalendarManager
 
 logger = logging.getLogger("appointment-tools")
 
@@ -33,6 +35,10 @@ class AppointmentTools(llm.ToolContext):
         self._call_start_time = time.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
+        self._booking_id: Optional[str] = None
+        self._booking_confirmed = False
+        self._booking_error: Optional[str] = None
+        self._end_call_called = False
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
@@ -56,11 +62,44 @@ class AppointmentTools(llm.ToolContext):
         Returns 'available' or 'unavailable: next available slot is <slot>'.
         """
         try:
-            if await check_slot(date, time):
+            await _log("Availability check started", f"date={date} time={time}", "info")
+            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
+            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
+            duration_raw = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
+            try:
+                duration = int(duration_raw or "30")
+            except ValueError:
+                duration = 30
+
+            local_available = await check_slot(date, time)
+            if gcal_json:
+                await _log("Availability check using Google Calendar", f"calendar_id={gcal_id}", "info")
+                manager = GoogleCalendarManager(gcal_json, gcal_id)
+                calendar_available = manager.is_slot_available(date, time, duration)
+                if local_available and calendar_available:
+                    await _log("Availability result", f"available via Google Calendar date={date} time={time}", "info")
+                    return "available"
+                next_slot = manager.get_next_available(date, time, duration)
+                await _log(
+                    "Availability result",
+                    f"unavailable via Google Calendar date={date} time={time}; next={next_slot}",
+                    "info",
+                )
+                return f"unavailable: next available slot is {next_slot}"
+
+            await _log("Availability check using Supabase fallback", f"date={date} time={time}", "info")
+            if local_available:
+                await _log("Availability result", f"available via Supabase date={date} time={time}", "info")
                 return "available"
             next_slot = await get_next_available(date, time)
+            await _log(
+                "Availability result",
+                f"unavailable via Supabase date={date} time={time}; next={next_slot}",
+                "info",
+            )
             return f"unavailable: next available slot is {next_slot}"
-        except Exception:
+        except Exception as exc:
+            await _log("Availability check failed", str(exc), "error")
             return "Unable to check availability right now — please suggest a date and I will confirm."
 
     @llm.function_tool
@@ -71,9 +110,74 @@ class AppointmentTools(llm.ToolContext):
         name: lead's full name | phone: with country code | date: YYYY-MM-DD | time: HH:MM | service: type
         """
         try:
-            booking_id = await insert_appointment(name, phone, date, time, service)
+            self._booking_id = None
+            self._booking_confirmed = False
+            self._booking_error = None
+            await _log(
+                "Appointment booking started",
+                f"name={name} phone={phone} date={date} time={time} service={service}",
+                "info",
+            )
+            if not await check_slot(date, time):
+                next_slot = await get_next_available(date, time)
+                self._booking_error = f"slot unavailable; next={next_slot}"
+                await _log("Appointment booking blocked", self._booking_error, "warning")
+                return f"That slot was just booked. The next available slot is {next_slot}."
+
+            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
+            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
+            duration_raw = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
+            try:
+                duration = int(duration_raw or "30")
+            except ValueError:
+                duration = 30
+
+            manager = GoogleCalendarManager(gcal_json, gcal_id) if gcal_json else None
+            if manager and not manager.is_slot_available(date, time, duration):
+                next_slot = manager.get_next_available(date, time, duration)
+                self._booking_error = f"Google Calendar slot unavailable; next={next_slot}"
+                await _log("Appointment booking blocked", self._booking_error, "warning")
+                return f"That slot is unavailable. The next available slot is {next_slot}."
+
+            try:
+                booking_id = await insert_appointment(name, phone, date, time, service)
+            except Exception as exc:
+                self._booking_error = str(exc)
+                await _log("Supabase appointment insert failed", self._booking_error, "error")
+                raise
+
+            self._booking_id = booking_id
+            self._booking_confirmed = True
+            self._booking_error = None
+            await _log("Supabase appointment insert succeeded", f"booking_id={booking_id}", "info")
+            if manager:
+                try:
+                    await _log("Google Calendar sync started", f"booking_id={booking_id} calendar_id={gcal_id}", "info")
+                    event_id, event_link = manager.book_event(name, phone, date, time, service, duration)
+                    if event_id or event_link:
+                        await update_appointment_gcal(booking_id, event_id or "", event_link or "")
+                    await _log(
+                        "Google Calendar sync succeeded",
+                        f"booking_id={booking_id} event_id={event_id or ''} event_link={event_link or ''}",
+                        "info",
+                    )
+                except Exception as exc:
+                    self._booking_error = f"Google Calendar sync failed: {exc}"
+                    await _log(
+                        "Google Calendar sync failed after local appointment insert",
+                        f"booking_id={booking_id} error={exc}",
+                        "error",
+                    )
+                    return (
+                        f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} "
+                        f"for {service}. Calendar sync is pending."
+                    )
+            else:
+                await _log("Google Calendar sync skipped", "Google Calendar is not configured; Supabase booking only", "info")
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
-        except Exception:
+        except Exception as exc:
+            self._booking_confirmed = False
+            await _log("Appointment booking failed", str(exc), "error")
             return "Technical issue saving the booking. Our team will confirm shortly."
 
     @llm.function_tool
@@ -83,12 +187,35 @@ class AppointmentTools(llm.ToolContext):
         outcome: 'booked' | 'not_interested' | 'wrong_number' | 'voicemail' | 'no_answer' | 'callback_requested'
         reason: brief description
         """
+        self._end_call_called = True
         duration = int(time.time() - self._call_start_time)
+        await _log(
+            "End call invoked",
+            (
+                f"outcome={outcome} reason={reason} "
+                f"booking_confirmed={self._booking_confirmed} booking_id={self._booking_id or ''}"
+            ),
+            "info",
+        )
+        notes = None
+        if outcome == "booked" and not self._booking_confirmed:
+            guard_note = "Booked outcome blocked: no appointment booking tool success."
+            await _log(
+                "Booked outcome blocked because no successful book_appointment",
+                self._booking_error or guard_note,
+                "warning",
+            )
+            outcome = "appointment_failed"
+            reason = f"{reason}; {guard_note}" if reason else guard_note
+            notes = self._booking_error or guard_note
+        elif outcome == "booked" and self._booking_id:
+            notes = f"Booking ID: {self._booking_id}"
+            reason = f"{reason}; booking_id={self._booking_id}" if reason else f"booking_id={self._booking_id}"
         try:
             await log_call(
                 phone_number=self.phone_number or "unknown",
                 lead_name=self.lead_name, outcome=outcome, reason=reason,
-                duration_seconds=duration, recording_url=self.recording_url,
+                duration_seconds=duration, recording_url=self.recording_url, notes=notes,
             )
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)

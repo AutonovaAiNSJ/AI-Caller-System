@@ -35,7 +35,7 @@ from db import (
     get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
     delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign,
-    get_contacts, get_errors, get_logs, get_setting, get_stats, init_db, log_error,
+    get_contacts, get_errors, get_logs, get_recent_transcripts, get_setting, get_stats, init_db, log_error,
     save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
@@ -150,18 +150,23 @@ async def api_dispatch_call(req: CallRequest):
     effective_voice  = None
     effective_model  = None
     effective_tools  = None
+    profile_name = None
+    prompt_source = "per_call_override" if req.system_prompt else "none"
 
     if req.agent_profile_id:
         profile = await get_agent_profile(req.agent_profile_id)
         if profile:
+            profile_name = profile.get("name")
             if not effective_prompt and profile.get("system_prompt"):
                 effective_prompt = profile["system_prompt"]
+                prompt_source = "agent_profile"
             effective_voice = profile.get("voice")
             effective_model = profile.get("model")
             effective_tools = profile.get("enabled_tools")
 
     if not effective_prompt:
         effective_prompt = await get_setting("system_prompt", "") or None
+        prompt_source = "global" if effective_prompt else "default"
 
     room_name = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
     metadata: dict = {
@@ -170,6 +175,11 @@ async def api_dispatch_call(req: CallRequest):
         "business_name": req.business_name,
         "service_type":  req.service_type,
         "system_prompt": effective_prompt,
+        "agent_profile_id": req.agent_profile_id,
+        "agent_profile_name": profile_name,
+        "system_prompt_override_present": bool(req.system_prompt),
+        "prompt_source": prompt_source,
+        "canonical_phone": phone,
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
     if effective_model:  metadata["model_override"] = effective_model
@@ -190,7 +200,17 @@ async def api_dispatch_call(req: CallRequest):
         )
         await lk.aclose()
         await session.close()
-        await log_error("server", f"Call dispatched to {phone}", f"room={room_name}", "info")
+        await log_error(
+            "server",
+            f"Call dispatched to {phone}",
+            (
+                f"room={room_name}; phone={phone}; agent_profile_id={req.agent_profile_id or ''}; "
+                f"prompt_source={prompt_source}; system_prompt_override_present={bool(req.system_prompt)}; "
+                f"tools_override_present={bool(effective_tools)}; lead_name={req.lead_name}; "
+                f"business_name={req.business_name}; service_type={req.service_type}"
+            ),
+            "info",
+        )
         return {"status": "dispatched", "room": room_name, "phone": phone}
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
@@ -217,6 +237,36 @@ async def api_update_notes(call_id: str, req: NotesRequest):
 @app.get("/api/stats")
 async def api_get_stats():
     return await get_stats()
+
+
+@app.get("/api/health")
+async def api_health():
+    services = {
+        "supabase": False,
+        "livekit": False,
+        "gemini": False,
+        "sip": False,
+    }
+    try:
+        await get_all_settings()
+        services["supabase"] = True
+        logger.info("[health] supabase ok")
+    except Exception as exc:
+        logger.warning("[health] supabase failed: %s", exc)
+
+    services["livekit"] = bool(
+        await eff("LIVEKIT_URL")
+        and await eff("LIVEKIT_API_KEY")
+        and await eff("LIVEKIT_API_SECRET")
+    )
+    services["gemini"] = bool(await eff("GOOGLE_API_KEY"))
+    services["sip"] = bool(
+        await eff("VOBIZ_SIP_DOMAIN")
+        and await eff("VOBIZ_USERNAME")
+        and await eff("VOBIZ_PASSWORD")
+        and await eff("VOBIZ_OUTBOUND_NUMBER")
+    )
+    return {"status": "ok", "services": services}
 
 
 # ── Appointments ──────────────────────────────────────────────────────────────
@@ -326,6 +376,11 @@ async def api_clear_logs():
     return {"status": "cleared"}
 
 
+@app.get("/api/transcripts/recent")
+async def api_recent_transcripts(limit: int = 120, room_name: Optional[str] = None):
+    return await get_recent_transcripts(limit=limit, room_name=room_name)
+
+
 # ── CRM ───────────────────────────────────────────────────────────────────────
 
 @app.get("/api/crm")
@@ -403,16 +458,23 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
                          prompt: Optional[str], profile: Optional[dict] = None) -> bool:
     try:
         saved_prompt = prompt or (await get_setting("system_prompt", "")) or None
+        prompt_source = "campaign" if prompt else ("global" if saved_prompt else "default")
         metadata: dict = {
             "phone_number":  contact["phone"],
             "lead_name":     contact.get("lead_name", "there"),
             "business_name": contact.get("business_name", "our company"),
             "service_type":  contact.get("service_type", "our service"),
             "system_prompt": saved_prompt,
+            "agent_profile_id": profile.get("id") if profile else None,
+            "agent_profile_name": profile.get("name") if profile else None,
+            "system_prompt_override_present": bool(prompt),
+            "prompt_source": prompt_source,
+            "canonical_phone": contact["phone"],
         }
         if profile:
             if not metadata["system_prompt"] and profile.get("system_prompt"):
                 metadata["system_prompt"] = profile["system_prompt"]
+                metadata["prompt_source"] = "agent_profile"
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
@@ -606,10 +668,12 @@ async def simulate_call():
         )
 
         metadata = {
-        "lead_name": "Niraj",
+        "lead_name": "there",
         "phone_number": None,
-        "business_name": "Test Company",
-        "service_type": "Simulation",
+        "business_name": "our company",
+        "service_type": "our service",
+        "prompt_source": "simulate",
+        "canonical_phone": None,
         }
 
         await livekit_api.agent_dispatch.create_dispatch(

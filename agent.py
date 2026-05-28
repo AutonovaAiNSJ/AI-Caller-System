@@ -36,6 +36,28 @@ logger = logging.getLogger("outbound-agent")
 
 SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 
+MANDATORY_TOOL_CONTRACT = """
+
+MANDATORY TOOL CONTRACT:
+- Always use the provided lead_name, business_name, service_type, phone, agent name, and organization metadata.
+- Never invent company names, services, phone numbers, lead names, agent names, calendar details, SMS status, prices, or locations.
+- If a value is missing, ask the user or use known call metadata.
+- If the user says "use the number you called me on", "same number", or "this number", use the call metadata phone number from the dispatch payload.
+- If phone is missing from metadata, ask the user to confirm their phone number.
+- Never say a time slot is available unless check_availability returned available.
+- Never say an appointment is booked, scheduled, or confirmed unless book_appointment returned a Booking ID.
+- Never say SMS was sent until send_sms_confirmation succeeds.
+- Never say a calendar event was created unless book_appointment reports Calendar sync success or a booking confirmation.
+- If the user asks to book, first collect date, time, service, name, and phone if missing.
+- Then call check_availability.
+- If available, call book_appointment.
+- Only after book_appointment succeeds may you say the booking is confirmed.
+- Only after book_appointment succeeds may you call end_call(outcome="booked").
+- If booking fails, say the team will follow up and use end_call(outcome="appointment_failed" or callback_requested).
+- If the caller disconnects before booking, do not mark booked.
+- Never roleplay tool success.
+"""
+
 
 async def _log(level: str, msg: str, detail: str = "") -> None:
     if level == "info":      logger.info(msg)
@@ -57,6 +79,12 @@ async def _log_exception(msg: str, exc: Exception, level: str = "error") -> None
         await log_error("agent", msg, tb, level)
     except Exception:
         logger.exception("Failed to persist exception log")
+
+
+def _safe_preview(text: Optional[str], limit: int = 200) -> str:
+    if not text:
+        return ""
+    return " ".join(str(text).split())[:limit]
 
 
 def load_db_settings_to_env() -> None:
@@ -194,6 +222,10 @@ async def entrypoint(ctx: agents.JobContext):
     voice_override: Optional[str] = None
     model_override: Optional[str] = None
     tools_override = None
+    agent_profile_id: Optional[str] = None
+    agent_profile_name: Optional[str] = None
+    prompt_override_present = False
+    prompt_source = "default"
 
     raw_meta = ctx.job.metadata or ""
     try:
@@ -206,6 +238,10 @@ async def entrypoint(ctx: agents.JobContext):
         voice_override = meta.get("voice_override")
         model_override = meta.get("model_override")
         tools_override = meta.get("tools_override")
+        agent_profile_id = meta.get("agent_profile_id")
+        agent_profile_name = meta.get("agent_profile_name")
+        prompt_override_present = bool(meta.get("system_prompt_override_present"))
+        prompt_source = meta.get("prompt_source") or ("per_call_override" if prompt_override_present else "metadata_or_global")
     except Exception as exc:
         await _log_exception("Metadata parse error", exc, "warning")
 
@@ -240,22 +276,50 @@ async def entrypoint(ctx: agents.JobContext):
         enabled_tools = await get_enabled_tools()
 
     # ── Resolve system prompt (DB → metadata → default) ─────────────────────
+    if system_prompt:
+        prompt_source = prompt_source or "metadata"
     if not system_prompt:
         from db import get_setting as _gs
         system_prompt = await _gs("system_prompt", "") or None
+        prompt_source = "global" if system_prompt else "default"
+
+    agent_display_name = agent_profile_name or "Priya"
 
     system_prompt = build_prompt(
         lead_name=lead_name,
         business_name=business_name,
         service_type=service_type,
+        phone=phone_number or "",
+        agent_name=agent_display_name,
         custom_prompt=system_prompt,
     )
+    system_prompt = f"{system_prompt.rstrip()}{MANDATORY_TOOL_CONTRACT}"
 
     tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
+    transcript_saved = False
+
+    await _log(
+        "info",
+        "Agent prompt/tools resolved",
+        (
+            f"room={ctx.room.name}; profile_id={agent_profile_id or ''}; "
+            f"profile_name={agent_profile_name or ''}; prompt_source={prompt_source}; "
+            f"agent_display_name={agent_display_name}; business_name={business_name}; "
+            f"service_type={service_type}; canonical_phone={phone_number or ''}; "
+            f"enabled_tools={enabled_tools}; "
+            f"model={os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-live-preview')}; "
+            f"voice={os.getenv('GEMINI_TTS_VOICE', 'Aoede')}; "
+            f"override_prompt_present={prompt_override_present}; "
+            f"prompt_preview={_safe_preview(system_prompt)}"
+        ),
+    )
+    await _log("info", "Mandatory tool contract appended", f"room={ctx.room.name}")
 
     async def _persist_transcript(speaker: str, text: str) -> None:
+        nonlocal transcript_saved
         try:
             await save_transcript(ctx.room.name, speaker, text)
+            transcript_saved = True
             await _log("info", "Transcript saved", f"{speaker}: {text[:160]}")
         except Exception as exc:
             await _log_exception("Transcript save failed", exc, "warning")
@@ -518,6 +582,17 @@ async def entrypoint(ctx: agents.JobContext):
 
         await _log("info", f"SIP participant disconnected — ending session for {phone_number}")
 
+        await _log(
+            "info",
+            "Session disconnect summary",
+            (
+                f"room={ctx.room.name}; duration_seconds={int(time.time() - tool_ctx._call_start_time)}; "
+                f"end_call_called={tool_ctx._end_call_called}; "
+                f"booking_confirmed={tool_ctx._booking_confirmed}; "
+                f"booking_id={tool_ctx._booking_id or ''}; transcript_saved={transcript_saved}"
+            ),
+        )
+
         try:
             await asyncio.sleep(2)
             await session.aclose()
@@ -533,6 +608,16 @@ async def entrypoint(ctx: agents.JobContext):
             await asyncio.wait_for(_done.wait(), timeout=3600)
         except asyncio.TimeoutError:
             pass
+        await _log(
+            "info",
+            "Session disconnect summary",
+            (
+                f"room={ctx.room.name}; duration_seconds={int(time.time() - tool_ctx._call_start_time)}; "
+                f"end_call_called={tool_ctx._end_call_called}; "
+                f"booking_confirmed={tool_ctx._booking_confirmed}; "
+                f"booking_id={tool_ctx._booking_id or ''}; transcript_saved={transcript_saved}"
+            ),
+        )
 
 
 if __name__ == "__main__":

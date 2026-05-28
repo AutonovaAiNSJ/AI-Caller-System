@@ -5,6 +5,7 @@ __pycache__/
 *.db
 *.sqlite
 *.log
+*.json
 venv/
 .venv/
 node_modules/

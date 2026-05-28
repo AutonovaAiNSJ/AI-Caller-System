@@ -36,7 +36,7 @@ SENSITIVE_KEYS = {
     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "GOOGLE_API_KEY",
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
-    "DEEPGRAM_API_KEY",
+    "DEEPGRAM_API_KEY", "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON",
 }
 
 
@@ -96,6 +96,7 @@ async def get_all_settings() -> dict:
         "DEEPGRAM_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
+        "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "GOOGLE_CALENDAR_ID", "GOOGLE_CALENDAR_SLOT_DURATION",
         "ENABLED_TOOLS",
     ]
     out: dict = {}
@@ -209,6 +210,18 @@ async def insert_appointment(name: str, phone: str, date: str, time: str, servic
     return booking_id
 
 
+async def update_appointment_gcal(booking_id: str, event_id: str, event_link: str) -> None:
+    """Associate Google Calendar details with the appointment inserted locally."""
+    try:
+        db = await _adb()
+        await db.table("appointments").update({
+            "gcal_event_id": event_id,
+            "gcal_event_link": event_link,
+        }).like("id", f"{booking_id.lower()}%").execute()
+    except Exception as exc:
+        print(f"Google Calendar local appointment update failed: {exc}")
+
+
 async def check_slot(date: str, time: str) -> bool:
     """Returns True if slot is available (no existing booking)."""
     db = await _adb()
@@ -217,7 +230,7 @@ async def check_slot(date: str, time: str) -> bool:
         .eq("date", date).eq("time", time).eq("status", "booked")
         .maybe_single().execute()
     )
-    return result.data is None
+    return not (result and getattr(result, "data", None))
 
 
 async def get_next_available(date: str, time: str) -> str:
@@ -287,6 +300,15 @@ async def save_transcript(room_name: str, speaker: str, message: str) -> None:
         "message": message,
         "created_at": datetime.now().isoformat(),
     }).execute()
+
+
+async def get_recent_transcripts(limit: int = 120, room_name: Optional[str] = None) -> list:
+    db = await _adb()
+    query = db.table("call_transcripts").select("*").order("created_at", desc=True).limit(limit)
+    if room_name:
+        query = query.eq("room_name", room_name)
+    result = await query.execute()
+    return result.data or []
 
 
 async def get_all_calls(page: int = 1, limit: int = 20) -> list:
@@ -397,7 +419,7 @@ async def get_all_campaigns() -> list:
 async def get_campaign(campaign_id: str) -> Optional[dict]:
     db = await _adb()
     result = await db.table("campaigns").select("*").eq("id", campaign_id).maybe_single().execute()
-    return result.data if result else None
+    return result.data if result and getattr(result, "data", None) else None
 
 
 async def update_campaign_status(campaign_id: str, status: str) -> bool:
@@ -459,7 +481,7 @@ async def get_all_agent_profiles() -> list:
 async def get_agent_profile(profile_id: str) -> Optional[dict]:
     db = await _adb()
     result = await db.table("agent_profiles").select("*").eq("id", profile_id).maybe_single().execute()
-    return result.data if result else None
+    return result.data if result and getattr(result, "data", None) else None
 
 
 async def create_agent_profile(
