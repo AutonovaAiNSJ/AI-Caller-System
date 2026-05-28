@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import secrets
 import ssl
 import certifi
 import aiohttp
@@ -54,6 +55,62 @@ except ImportError:
 
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
 _running_campaigns: set[str] = set()
+_auth_warning_logged = False
+
+
+def _is_local_request(request: Request) -> bool:
+    client_host = request.client.host if request.client else ""
+    host_header = (request.headers.get("host") or "").split(":", 1)[0].lower()
+    local_hosts = {"127.0.0.1", "::1", "localhost"}
+    return client_host in local_hosts and (not host_header or host_header in local_hosts)
+
+
+def _extract_admin_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return (
+        request.headers.get("x-admin-token")
+        or request.cookies.get("admin_token")
+        or ""
+    ).strip()
+
+
+async def _admin_token() -> str:
+    env_token = os.getenv("ADMIN_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    try:
+        return (await get_setting("ADMIN_TOKEN", "") or "").strip()
+    except Exception:
+        return ""
+
+
+async def _request_authenticated(request: Request) -> bool:
+    configured = await _admin_token()
+    if not configured:
+        return _is_local_request(request)
+    supplied = _extract_admin_token(request)
+    return bool(supplied) and secrets.compare_digest(supplied, configured)
+
+
+@app.middleware("http")
+async def admin_auth_middleware(request: Request, call_next):
+    global _auth_warning_logged
+    path = request.url.path
+    if path == "/api/health":
+        return await call_next(request)
+    elif path == "/" or path.startswith("/api/") or path.startswith("/docs") or path.startswith("/redoc") or path.startswith("/openapi.json"):
+        configured = await _admin_token()
+        if not configured:
+            if not _auth_warning_logged:
+                logger.warning("Auth disabled because ADMIN_TOKEN is missing; localhost-only access is allowed")
+                _auth_warning_logged = True
+            if not _is_local_request(request):
+                return JSONResponse({"detail": "ADMIN_TOKEN is not configured; remote access is blocked"}, status_code=401)
+        elif path.startswith("/api/") and not await _request_authenticated(request):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -133,6 +190,11 @@ class CampaignRequest(BaseModel):
 
 class StatusRequest(BaseModel):
     status: str
+
+
+class AdminTokenChangeRequest(BaseModel):
+    current_token: str = ""
+    new_token: str
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -280,7 +342,9 @@ async def api_get_stats():
 
 
 @app.get("/api/health")
-async def api_health():
+async def api_health(request: Request):
+    if not await _request_authenticated(request):
+        return {"status": "ok"}
     services = {
         "supabase": False,
         "livekit": False,
@@ -354,10 +418,24 @@ async def api_get_settings():
 @app.post("/api/settings")
 async def api_save_settings(req: SettingsRequest):
     filtered = {k: v for k, v in req.settings.items() if v is not None and v != ""}
+    filtered.pop("ADMIN_TOKEN", None)
     await save_settings(filtered)
     for k, v in filtered.items():
         os.environ[k] = str(v)
     return {"status": "saved", "count": len(filtered)}
+
+
+@app.post("/api/admin/change-token")
+async def api_change_admin_token(req: AdminTokenChangeRequest):
+    current = await _admin_token()
+    new_token = (req.new_token or "").strip()
+    if len(new_token) < 8:
+        raise HTTPException(400, "New admin token must be at least 8 characters")
+    if current and not secrets.compare_digest((req.current_token or "").strip(), current):
+        raise HTTPException(403, "Current admin token is incorrect")
+    await set_setting("ADMIN_TOKEN", new_token)
+    os.environ["ADMIN_TOKEN"] = new_token
+    return {"status": "updated"}
 
 
 # ── SIP trunk setup ───────────────────────────────────────────────────────────
