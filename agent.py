@@ -297,6 +297,14 @@ async def entrypoint(ctx: agents.JobContext):
 
     tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
     transcript_saved = False
+    call_answered = False
+    session_started = False
+
+    async def _fallback_call_log(outcome: str, reason: str, detail: str = "") -> None:
+        try:
+            await tool_ctx.log_fallback_call_end(outcome=outcome, reason=reason, detail=detail)
+        except Exception as exc:
+            await _log_exception("Fallback call logging crashed", exc, "error")
 
     await _log(
         "info",
@@ -408,9 +416,15 @@ async def entrypoint(ctx: agents.JobContext):
                     "info",
                     f"Call ANSWERED — {phone_number} picked up, starting AI session now"
                 )
+                call_answered = True
 
             except Exception as exc:
                 await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
+                await _fallback_call_log(
+                    "no_answer",
+                    "sip dial failed before answer",
+                    f"error={exc}",
+                )
                 ctx.shutdown()
                 return
 
@@ -424,7 +438,17 @@ async def entrypoint(ctx: agents.JobContext):
     await _log("info", f"Building AI session — model={gemini_model}")
     active_tools = tool_ctx.build_tool_list(enabled_tools)
     await _log("info", f"Tools loaded: {[t.__name__ for t in active_tools]}")
-    session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    try:
+        session = _build_session(tools=active_tools, system_prompt=system_prompt)
+    except Exception as exc:
+        await _log_exception("AI session build failed", exc, "error")
+        await _fallback_call_log(
+            "disconnected" if call_answered else "no_answer",
+            "session build failed before end_call",
+            f"error={exc}",
+        )
+        ctx.shutdown()
+        return
 
     # Never use close_on_disconnect=True with SIP (Rule 2)
     if _HAS_ROOM_OPTIONS:
@@ -441,7 +465,18 @@ async def entrypoint(ctx: agents.JobContext):
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
 
-    await session.start(**_session_kwargs)
+    try:
+        await session.start(**_session_kwargs)
+        session_started = True
+    except Exception as exc:
+        await _log_exception("AI session start failed", exc, "error")
+        await _fallback_call_log(
+            "disconnected" if call_answered else "no_answer",
+            "session start failed before end_call",
+            f"error={exc}",
+        )
+        ctx.shutdown()
+        return
     await asyncio.sleep(2)
     # await asyncio.sleep(2)
 
@@ -582,12 +617,21 @@ async def entrypoint(ctx: agents.JobContext):
 
         await _log("info", f"SIP participant disconnected — ending session for {phone_number}")
 
+        fallback_outcome = "abandoned" if call_answered else "no_answer"
+        fallback_reason = "sip disconnect before end_call" if call_answered else "sip session ended before answer confirmation"
+        await _fallback_call_log(
+            fallback_outcome,
+            fallback_reason,
+            f"session_started={session_started}; transcript_saved={transcript_saved}",
+        )
+
         await _log(
             "info",
             "Session disconnect summary",
             (
                 f"room={ctx.room.name}; duration_seconds={int(time.time() - tool_ctx._call_start_time)}; "
                 f"end_call_called={tool_ctx._end_call_called}; "
+                f"final_log_written={tool_ctx._final_log_written}; "
                 f"booking_confirmed={tool_ctx._booking_confirmed}; "
                 f"booking_id={tool_ctx._booking_id or ''}; transcript_saved={transcript_saved}"
             ),
@@ -608,12 +652,18 @@ async def entrypoint(ctx: agents.JobContext):
             await asyncio.wait_for(_done.wait(), timeout=3600)
         except asyncio.TimeoutError:
             pass
+        await _fallback_call_log(
+            "disconnected",
+            "session ended before end_call",
+            f"session_started={session_started}; transcript_saved={transcript_saved}",
+        )
         await _log(
             "info",
             "Session disconnect summary",
             (
                 f"room={ctx.room.name}; duration_seconds={int(time.time() - tool_ctx._call_start_time)}; "
                 f"end_call_called={tool_ctx._end_call_called}; "
+                f"final_log_written={tool_ctx._final_log_written}; "
                 f"booking_confirmed={tool_ctx._booking_confirmed}; "
                 f"booking_id={tool_ctx._booking_id or ''}; transcript_saved={transcript_saved}"
             ),

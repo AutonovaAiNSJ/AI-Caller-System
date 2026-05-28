@@ -53,13 +53,16 @@ except ImportError:
     logger.warning("APScheduler not installed — campaign scheduling disabled")
 
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
+_running_campaigns: set[str] = set()
 
 
 @app.on_event("startup")
 async def _startup():
     init_db()
     if _scheduler:
-        _scheduler.start()
+        if not _scheduler.running:
+            _scheduler.start()
+            logger.info("Campaign scheduler started")
         await _reschedule_all_campaigns()
 
 
@@ -482,7 +485,7 @@ async def api_set_default_profile(profile_id: str):
 # ── Campaigns ─────────────────────────────────────────────────────────────────
 
 async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
-                         prompt: Optional[str], profile: Optional[dict] = None) -> bool:
+                         prompt: Optional[str], profile: Optional[dict] = None) -> tuple[bool, str]:
     try:
         saved_prompt = prompt or (await get_setting("system_prompt", "")) or None
         prompt_source = "campaign" if prompt else ("global" if saved_prompt else "default")
@@ -505,25 +508,44 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools"): metadata["tools_override"] = profile["enabled_tools"]
+        logger.info("Campaign room create: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
+        logger.info("Campaign agent dispatch: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(
                 agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
             )
         )
-        return True
+        await log_error("server", "Campaign dispatch succeeded", f"room={room_name}; phone={contact.get('phone')}", "info")
+        return True, ""
     except Exception as exc:
         logger.error("Campaign dispatch error for %s: %s", contact.get("phone"), exc)
-        return False
+        await log_error("server", "Campaign dispatch failed", f"room={room_name}; phone={contact.get('phone')}; error={exc}", "error")
+        return False, str(exc)
 
 
-async def _run_campaign(campaign_id: str) -> None:
+async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> None:
+    if campaign_id in _running_campaigns:
+        logger.warning("Campaign %s run skipped; another run is already active", campaign_id)
+        await log_error("server", "Campaign run skipped", f"campaign_id={campaign_id}; reason=already_running", "warning")
+        return
+    _running_campaigns.add(campaign_id)
     campaign = await get_campaign(campaign_id)
     if not campaign:
+        _running_campaigns.discard(campaign_id)
         return
     contacts = json.loads(campaign.get("contacts_json") or "[]")
     if not contacts:
+        await update_campaign_run_stats(campaign_id, 0, 0, "failed")
+        await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=no_contacts", "error")
+        _running_campaigns.discard(campaign_id)
         return
+    if campaign.get("status") in ("paused", "completed") and trigger_source != "manual":
+        await log_error("server", "Campaign scheduled run skipped", f"campaign_id={campaign_id}; status={campaign.get('status')}", "info")
+        _running_campaigns.discard(campaign_id)
+        return
+    await update_campaign_status(campaign_id, "running")
+    await log_error("server", "Campaign run started", f"campaign_id={campaign_id}; trigger={trigger_source}; total={len(contacts)}", "info")
     delay   = int(campaign.get("call_delay_seconds") or 3)
     prompt  = campaign.get("system_prompt")
     agent_profile_id = campaign.get("agent_profile_id")
@@ -536,35 +558,59 @@ async def _run_campaign(campaign_id: str) -> None:
     secret = await eff("LIVEKIT_API_SECRET")
     if not (url and key and secret):
         logger.error("Campaign %s: LiveKit not configured", campaign_id)
+        await update_campaign_run_stats(campaign_id, 0, len(contacts), "failed")
+        await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=livekit_not_configured", "error")
+        _running_campaigns.discard(campaign_id)
         return
 
     from livekit import api as lk_api_module
     session = livekit_client_session()
 
-    ok_count = fail_count = 0
+    ok_count = fail_count = skipped_count = 0
+    final_status = "failed"
     try:
         lk = lk_api_module.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         for i, contact in enumerate(contacts):
             phone = contact.get("phone", "")
             if not phone.startswith("+"):
+                skipped_count += 1
                 fail_count += 1
+                await log_error("server", "Campaign contact skipped", f"campaign_id={campaign_id}; phone={phone or 'missing'}; reason=invalid_phone", "warning")
                 continue
             room_name = f"camp-{campaign_id[:8]}-{phone.replace('+','')}-{random.randint(100,999)}"
-            success = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
+            success, reason = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
             if success:
                 ok_count += 1
             else:
                 fail_count += 1
+                await log_error("server", "Campaign contact failed", f"campaign_id={campaign_id}; phone={phone}; reason={reason}", "error")
             if i < len(contacts) - 1:
                 await asyncio.sleep(delay)
+        final_status = "completed" if fail_count == 0 else ("partial" if ok_count else "failed")
         await lk.aclose()
     except Exception as exc:
         logger.error("Campaign run error: %s", exc)
+        final_status = "partial" if ok_count else "failed"
+        await log_error("server", "Campaign run crashed", f"campaign_id={campaign_id}; error={exc}", "error")
     finally:
-        await session.close()
+        try:
+            await session.close()
+        except Exception:
+            pass
 
-    await update_campaign_run_stats(campaign_id, ok_count, fail_count)
-    logger.info("Campaign %s done — %d dispatched, %d failed", campaign_id, ok_count, fail_count)
+    persisted_status = "active" if campaign.get("schedule_type") in ("daily", "weekdays") and campaign.get("status") != "paused" else final_status
+    await update_campaign_run_stats(campaign_id, ok_count, fail_count, persisted_status)
+    await log_error(
+        "server",
+        "Campaign run completed",
+        (
+            f"campaign_id={campaign_id}; trigger={trigger_source}; status={final_status}; "
+            f"persisted_status={persisted_status}; dispatched={ok_count}; failed={fail_count}; skipped={skipped_count}"
+        ),
+        "warning" if fail_count else "info",
+    )
+    _running_campaigns.discard(campaign_id)
+    logger.info("Campaign %s done - %d dispatched, %d failed, %d skipped, status=%s", campaign_id, ok_count, fail_count, skipped_count, final_status)
 
 
 async def _reschedule_all_campaigns() -> None:
@@ -575,6 +621,7 @@ async def _reschedule_all_campaigns() -> None:
         for c in campaigns:
             if c.get("status") == "active" and c.get("schedule_type") in ("daily", "weekdays"):
                 _schedule_campaign(c["id"], c["schedule_type"], c.get("schedule_time", "09:00"))
+        logger.info("Campaign scheduler restore complete")
     except Exception as exc:
         logger.warning("Could not reschedule campaigns: %s", exc)
 
@@ -585,6 +632,7 @@ def _schedule_campaign(campaign_id: str, schedule_type: str, schedule_time: str)
     job_id = f"campaign_{campaign_id}"
     if _scheduler.get_job(job_id):
         _scheduler.remove_job(job_id)
+        logger.info("Removed existing scheduler job %s before re-registering", job_id)
     try:
         hour, minute = map(int, schedule_time.split(":"))
     except (ValueError, AttributeError):
@@ -593,7 +641,7 @@ def _schedule_campaign(campaign_id: str, schedule_type: str, schedule_time: str)
         trigger = CronTrigger(hour=hour, minute=minute)
     else:
         trigger = CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute)
-    _scheduler.add_job(_run_campaign, trigger=trigger, args=[campaign_id], id=job_id, replace_existing=True)
+    _scheduler.add_job(_run_campaign, trigger=trigger, args=[campaign_id, "scheduled"], id=job_id, replace_existing=True, max_instances=1, coalesce=True)
     logger.info("Scheduled campaign %s (%s at %02d:%02d)", campaign_id, schedule_type, hour, minute)
 
 
@@ -613,7 +661,7 @@ async def api_create_campaign(req: CampaignRequest):
     campaign = await get_campaign(campaign_id)
 
     if req.schedule_type == "once":
-        asyncio.create_task(_run_campaign(campaign_id))
+        asyncio.create_task(_run_campaign(campaign_id, "created_once"))
     else:
         _schedule_campaign(campaign_id, req.schedule_type, req.schedule_time)
 
@@ -633,6 +681,7 @@ async def api_delete_campaign_endpoint(campaign_id: str):
     job_id = f"campaign_{campaign_id}"
     if _scheduler and _scheduler.get_job(job_id):
         _scheduler.remove_job(job_id)
+        logger.info("Removed scheduler job %s after campaign delete", job_id)
     return {"status": "deleted"}
 
 
@@ -641,20 +690,21 @@ async def api_run_campaign_now(campaign_id: str):
     campaign = await get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(404, "Campaign not found")
-    asyncio.create_task(_run_campaign(campaign_id))
+    asyncio.create_task(_run_campaign(campaign_id, "manual"))
     return {"status": "dispatching", "campaign_id": campaign_id}
 
 
 @app.patch("/api/campaigns/{campaign_id}/status")
 async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
-    if req.status not in ("active", "paused", "completed"):
-        raise HTTPException(400, "status must be: active | paused | completed")
+    if req.status not in ("active", "paused", "completed", "running", "partial", "failed"):
+        raise HTTPException(400, "status must be: active | paused | completed | running | partial | failed")
     ok = await update_campaign_status(campaign_id, req.status)
     if not ok:
         raise HTTPException(404, "Campaign not found")
     job_id = f"campaign_{campaign_id}"
     if req.status == "paused" and _scheduler and _scheduler.get_job(job_id):
         _scheduler.remove_job(job_id)
+        logger.info("Removed scheduler job %s after campaign pause", job_id)
     elif req.status == "active":
         campaign = await get_campaign(campaign_id)
         if campaign and campaign.get("schedule_type") in ("daily", "weekdays"):

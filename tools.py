@@ -39,6 +39,8 @@ class AppointmentTools(llm.ToolContext):
         self._booking_confirmed = False
         self._booking_error: Optional[str] = None
         self._end_call_called = False
+        self._final_log_written = False
+        self._fallback_log_attempted = False
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
@@ -184,7 +186,7 @@ class AppointmentTools(llm.ToolContext):
     async def end_call(self, outcome: str, reason: str = "") -> str:
         """
         End the call and log the outcome. ALWAYS call this before the call ends.
-        outcome: 'booked' | 'not_interested' | 'wrong_number' | 'voicemail' | 'no_answer' | 'callback_requested'
+        outcome: 'booked' | 'not_interested' | 'wrong_number' | 'voicemail' | 'no_answer' | 'callback_requested' | 'appointment_failed'
         reason: brief description
         """
         self._end_call_called = True
@@ -217,6 +219,7 @@ class AppointmentTools(llm.ToolContext):
                 lead_name=self.lead_name, outcome=outcome, reason=reason,
                 duration_seconds=duration, recording_url=self.recording_url, notes=notes,
             )
+            self._final_log_written = True
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
         try:
@@ -225,6 +228,57 @@ class AppointmentTools(llm.ToolContext):
         except Exception:
             pass
         return "Call ended."
+
+    async def log_fallback_call_end(self, outcome: str, reason: str, detail: str = "") -> bool:
+        """Persist a final call log if the model/session never completed end_call."""
+        if self._final_log_written:
+            await _log(
+                "Fallback call log skipped",
+                f"reason=final log already written; requested_outcome={outcome}; detail={detail}",
+                "info",
+            )
+            return False
+        if self._fallback_log_attempted:
+            await _log(
+                "Fallback call log skipped",
+                f"reason=fallback already attempted; requested_outcome={outcome}; detail={detail}",
+                "warning",
+            )
+            return False
+
+        self._fallback_log_attempted = True
+        duration = int(time.time() - self._call_start_time)
+        notes = None
+        if self._booking_confirmed and self._booking_id:
+            notes = f"Booking ID: {self._booking_id}"
+        try:
+            await log_call(
+                phone_number=self.phone_number or "unknown",
+                lead_name=self.lead_name,
+                outcome=outcome,
+                reason=reason,
+                duration_seconds=duration,
+                recording_url=self.recording_url,
+                notes=notes,
+            )
+            self._final_log_written = True
+            await _log(
+                "Fallback call log created",
+                (
+                    f"outcome={outcome}; reason={reason}; duration_seconds={duration}; "
+                    f"end_call_called={self._end_call_called}; booking_confirmed={self._booking_confirmed}; "
+                    f"booking_id={self._booking_id or ''}; detail={detail}"
+                ),
+                "warning",
+            )
+            return True
+        except Exception as exc:
+            await _log(
+                "Fallback call log failed",
+                f"outcome={outcome}; reason={reason}; error={exc}",
+                "error",
+            )
+            return False
 
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:

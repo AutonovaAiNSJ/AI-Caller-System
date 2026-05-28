@@ -428,11 +428,11 @@ async def update_campaign_status(campaign_id: str, status: str) -> bool:
     return len(result.data or []) > 0
 
 
-async def update_campaign_run_stats(campaign_id: str, dispatched: int, failed: int) -> None:
+async def update_campaign_run_stats(campaign_id: str, dispatched: int, failed: int, status: str = "completed") -> None:
     db = await _adb()
     await db.table("campaigns").update({
         "last_run_at": datetime.now().isoformat(),
-        "total_dispatched": dispatched, "total_failed": failed, "status": "completed",
+        "total_dispatched": dispatched, "total_failed": failed, "status": status,
     }).eq("id", campaign_id).execute()
 
 
