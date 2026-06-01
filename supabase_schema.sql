@@ -24,6 +24,24 @@ CREATE TABLE IF NOT EXISTS call_logs (
     timestamp TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS call_sessions (
+    id TEXT PRIMARY KEY,
+    room_name TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'outbound',
+    phone_number TEXT NOT NULL,
+    lead_name TEXT,
+    status TEXT NOT NULL DEFAULT 'dispatching',
+    started_at TEXT NOT NULL,
+    connected_at TEXT,
+    ended_at TEXT,
+    outcome TEXT,
+    reason TEXT,
+    duration_seconds INTEGER,
+    recording_url TEXT,
+    metadata TEXT,
+    updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -49,12 +67,15 @@ CREATE TABLE IF NOT EXISTS call_transcripts (
 
 ALTER TABLE appointments  DISABLE ROW LEVEL SECURITY;
 ALTER TABLE call_logs     DISABLE ROW LEVEL SECURITY;
+ALTER TABLE call_sessions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE settings      DISABLE ROW LEVEL SECURITY;
 ALTER TABLE error_logs    DISABLE ROW LEVEL SECURITY;
 ALTER TABLE call_transcripts DISABLE ROW LEVEL SECURITY;
 
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS recording_url TEXT;
 ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS direction TEXT DEFAULT 'outbound';
+ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS call_session_id TEXT;
 
 CREATE TABLE IF NOT EXISTS campaigns (
     id TEXT PRIMARY KEY,

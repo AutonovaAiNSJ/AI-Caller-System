@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Optional
 
 from livekit import agents, api
@@ -36,10 +37,19 @@ async def _log(msg: str, detail: str = "", level: str = "info") -> None:
 class AppointmentTools(llm.ToolContext):
     """All function tools available to the appointment-booking agent."""
 
-    def __init__(self, ctx: agents.JobContext, phone_number: Optional[str] = None, lead_name: Optional[str] = None):
+    def __init__(
+        self,
+        ctx: agents.JobContext,
+        phone_number: Optional[str] = None,
+        lead_name: Optional[str] = None,
+        direction: str = "outbound",
+        call_session_id: Optional[str] = None,
+    ):
         self.ctx = ctx
         self.phone_number = phone_number
         self.lead_name = lead_name
+        self.direction = direction or "outbound"
+        self.call_session_id = call_session_id
         self._call_start_time = time.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
@@ -50,6 +60,18 @@ class AppointmentTools(llm.ToolContext):
         self._final_log_written = False
         self._fallback_log_attempted = False
         super().__init__(tools=[])
+
+    async def mark_connected(self) -> None:
+        try:
+            if self.call_session_id:
+                from db import update_call_session
+                await update_call_session(
+                    call_session_id=self.call_session_id,
+                    status="connected",
+                    connected_at=datetime.now().isoformat(),
+                )
+        except Exception:
+            pass
 
     def build_tool_list(self, enabled: list) -> list:
         """Return tool methods for the final resolved tool-name list."""
@@ -224,6 +246,7 @@ class AppointmentTools(llm.ToolContext):
                 phone_number=self.phone_number or "unknown",
                 lead_name=self.lead_name, outcome=outcome, reason=reason,
                 duration_seconds=duration, recording_url=self.recording_url, notes=notes,
+                direction=self.direction, call_session_id=self.call_session_id,
             )
             self._final_log_written = True
         except Exception as exc:
@@ -266,6 +289,8 @@ class AppointmentTools(llm.ToolContext):
                 duration_seconds=duration,
                 recording_url=self.recording_url,
                 notes=notes,
+                direction=self.direction,
+                call_session_id=self.call_session_id,
             )
             self._final_log_written = True
             await _log(
@@ -293,8 +318,14 @@ class AppointmentTools(llm.ToolContext):
         Call when lead requests a human, is angry, or has a complex issue.
         reason: why you're transferring
         """
-        destination = os.getenv("DEFAULT_TRANSFER_NUMBER", "")
+        destination = await get_setting("DEFAULT_TRANSFER_NUMBER", "")
         if not destination:
+            await log_error(
+                "transfer",
+                "Transfer unavailable: no destination configured",
+                f"reason={reason}; room={self.ctx.room.name}; phone={self.phone_number or ''}",
+                "warning",
+            )
             return "Transfer unavailable: no fallback number configured."
         if "@" not in destination:
             clean = destination.replace("tel:", "").replace("sip:", "")
@@ -307,8 +338,20 @@ class AppointmentTools(llm.ToolContext):
                 participant_identity = p.identity
                 break
         if not participant_identity:
+            await log_error(
+                "transfer",
+                "Transfer failed: no participant identity",
+                f"reason={reason}; room={self.ctx.room.name}; destination={destination}",
+                "warning",
+            )
             return "Transfer failed: could not identify caller."
         try:
+            await log_error(
+                "transfer",
+                "Transfer attempt",
+                f"reason={reason}; room={self.ctx.room.name}; destination={destination}; participant={participant_identity}",
+                "info",
+            )
             await self.ctx.api.sip.transfer_sip_participant(
                 api.TransferSIPParticipantRequest(
                     room_name=self.ctx.room.name,
@@ -316,8 +359,20 @@ class AppointmentTools(llm.ToolContext):
                     transfer_to=destination, play_dialtone=False,
                 )
             )
+            await log_error(
+                "transfer",
+                "Transfer requested",
+                f"room={self.ctx.room.name}; destination={destination}; participant={participant_identity}",
+                "info",
+            )
             return "Transferring you to a human agent now. Please hold."
         except Exception:
+            await log_error(
+                "transfer",
+                "Transfer failed",
+                f"room={self.ctx.room.name}; destination={destination}; participant={participant_identity}",
+                "error",
+            )
             return "Transfer failed. Please call us back directly."
 
     @llm.function_tool
@@ -326,6 +381,8 @@ class AppointmentTools(llm.ToolContext):
         Send SMS confirmation after a successful booking. Skips silently if Twilio not configured.
         phone: lead's phone | message: text to send
         """
+        if not phone or not message:
+            return "SMS skipped: missing phone or message."
         sid = os.getenv("TWILIO_ACCOUNT_SID", "")
         token = os.getenv("TWILIO_AUTH_TOKEN", "")
         from_num = os.getenv("TWILIO_FROM_NUMBER", "")
@@ -347,6 +404,8 @@ class AppointmentTools(llm.ToolContext):
         phone: the lead's phone number with country code
         Returns call history, appointments, and remembered details.
         """
+        if not phone:
+            return "Phone number missing; ask the caller to confirm their number."
         try:
             calls = await get_calls_by_phone(phone)
             appointments = await get_appointments_by_phone(phone)

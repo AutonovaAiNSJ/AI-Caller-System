@@ -4,6 +4,7 @@ import logging
 import os
 import ssl
 import certifi
+import time
 import traceback
 from typing import Optional
 
@@ -263,6 +264,8 @@ async def entrypoint(ctx: agents.JobContext):
     prompt_override_present = False
     prompt_source = "default"
     tools_override_supplied = False
+    call_session_id: Optional[str] = None
+    direction = "outbound"
 
     raw_meta = ctx.job.metadata or ""
     try:
@@ -281,6 +284,8 @@ async def entrypoint(ctx: agents.JobContext):
         agent_profile_source = meta.get("agent_profile_source") or "metadata"
         prompt_override_present = bool(meta.get("system_prompt_override_present"))
         prompt_source = meta.get("prompt_source") or ("per_call_override" if prompt_override_present else "metadata_or_global")
+        call_session_id = meta.get("call_session_id")
+        direction = meta.get("direction") or "outbound"
     except Exception as exc:
         await _log_exception("Metadata parse error", exc, "warning")
 
@@ -348,7 +353,13 @@ async def entrypoint(ctx: agents.JobContext):
     else:
         system_prompt = f"{system_prompt.rstrip()}\n\nBooking actions unavailable in this session. Do not claim availability or confirmed bookings.\n"
 
-    tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
+    tool_ctx = AppointmentTools(
+        ctx,
+        phone_number=phone_number,
+        lead_name=lead_name,
+        direction=direction,
+        call_session_id=call_session_id,
+    )
     transcript_saved = False
     call_answered = False
     session_started = False
@@ -472,6 +483,7 @@ async def entrypoint(ctx: agents.JobContext):
                     f"Call ANSWERED — {phone_number} picked up, starting AI session now"
                 )
                 call_answered = True
+                await tool_ctx.mark_connected()
 
             except Exception as exc:
                 await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
@@ -488,6 +500,7 @@ async def entrypoint(ctx: agents.JobContext):
                 "warning",
                 "No SIP trunk configured — running in local/browser mode"
             )
+            await tool_ctx.mark_connected()
     # ── Build and start Gemini Live ──────────────────────────────────────────
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     await _log("info", f"Building AI session — model={gemini_model}")

@@ -23,6 +23,10 @@ from pydantic import BaseModel
 
 from livekit import api
 
+from fastapi.staticfiles import StaticFiles
+
+
+
 _orig_ssl = ssl.create_default_context
 def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
     if not kwargs.get("cafile") and not kwargs.get("capath") and not kwargs.get("cadata"):
@@ -38,6 +42,7 @@ from db import (
     get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
     delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign, get_default_agent_profile,
+    create_call_session, update_call_session,
     get_contacts, get_errors, get_logs, get_recent_transcripts, get_setting, get_stats, init_db, log_error,
     save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
 )
@@ -56,6 +61,7 @@ except ImportError:
     logger.warning("APScheduler not installed — campaign scheduling disabled")
 
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
+app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 _running_campaigns: set[str] = set()
 _auth_warning_logged = False
 _active_calls: dict[str, dict] = {}
@@ -146,6 +152,15 @@ def _iso_to_epoch(value: str) -> float:
         return 0.0
 
 
+def _normalize_phone_identity(identity: Optional[str]) -> str:
+    if not identity:
+        return ""
+    clean = identity.replace("sip_", "").replace("sip:", "").replace("tel:", "")
+    if "@" in clean:
+        clean = clean.split("@", 1)[0]
+    return clean.strip()
+
+
 def _active_call_started(room_name: str, phone: str, lead_name: str = "there", status: str = "dispatching") -> None:
     now = time.time()
     _active_calls[room_name] = {
@@ -194,6 +209,17 @@ def livekit_client_session() -> aiohttp.ClientSession:
 
 class CallRequest(BaseModel):
     phone: str
+    lead_name: str = "there"
+    business_name: str = "our company"
+    service_type: str = "our service"
+    system_prompt: Optional[str] = None
+    agent_profile_id: Optional[str] = None
+
+
+class InboundDispatchRequest(BaseModel):
+    room_name: str
+    phone: Optional[str] = None
+    participant_identity: Optional[str] = None
     lead_name: str = "there"
     business_name: str = "our company"
     service_type: str = "our service"
@@ -318,6 +344,7 @@ async def api_dispatch_call(req: CallRequest):
         "system_prompt_override_present": bool(req.system_prompt),
         "prompt_source": prompt_source,
         "canonical_phone": phone,
+        "direction": "outbound",
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
     if effective_model:  metadata["model_override"] = effective_model
@@ -326,12 +353,22 @@ async def api_dispatch_call(req: CallRequest):
     lk = None
     session = None
     _active_call_started(room_name, phone, req.lead_name, "dispatching")
+    call_session_id = await create_call_session(
+        room_name=room_name,
+        direction="outbound",
+        phone_number=phone,
+        lead_name=req.lead_name,
+        status="dispatching",
+        metadata=metadata,
+    )
+    metadata["call_session_id"] = call_session_id
     try:
         from livekit import api as lk_api
         session = livekit_client_session()
         lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
         _active_call_update(room_name, "dialing", "LiveKit room created; agent dispatch requested")
+        await update_call_session(call_session_id, status="dialing")
         await lk.agent_dispatch.create_dispatch(
             lk_api.CreateAgentDispatchRequest(
                 agent_name="outbound-caller", room=room_name, metadata=json.dumps(metadata)
@@ -348,11 +385,156 @@ async def api_dispatch_call(req: CallRequest):
             ),
             "info",
         )
-        return {"status": "dispatched", "room": room_name, "phone": phone}
+        return {"status": "dispatched", "room": room_name, "phone": phone, "call_session_id": call_session_id}
     except Exception as exc:
         logger.error("Dispatch error: %s", exc)
         _active_call_failed(room_name, f"Dispatch failed: {exc}")
+        await update_call_session(
+            call_session_id,
+            status="failed",
+            ended_at=datetime.now().isoformat(),
+            reason=f"dispatch failed: {exc}",
+        )
         raise HTTPException(500, f"Dispatch failed: {exc}")
+    finally:
+        try:
+            if lk:
+                await lk.aclose()
+        except Exception:
+            pass
+        try:
+            if session:
+                await session.close()
+        except Exception:
+            pass
+
+
+@app.post("/api/inbound/dispatch")
+async def api_dispatch_inbound(req: InboundDispatchRequest):
+    url    = await eff("LIVEKIT_URL")
+    key    = await eff("LIVEKIT_API_KEY")
+    secret = await eff("LIVEKIT_API_SECRET")
+
+    if not all([url, key, secret]):
+        raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
+
+    room_name = (req.room_name or "").strip()
+    if not room_name:
+        raise HTTPException(400, "room_name is required for inbound dispatch.")
+
+    phone = (req.phone or "").strip()
+    if not phone:
+        phone = _normalize_phone_identity(req.participant_identity)
+    if not phone:
+        raise HTTPException(400, "Inbound dispatch requires phone or participant_identity.")
+
+    effective_prompt = req.system_prompt
+    effective_voice  = None
+    effective_model  = None
+    effective_tools  = None
+    profile_name = None
+    prompt_source = "per_call_override" if req.system_prompt else "none"
+    profile_source = "none"
+
+    if req.agent_profile_id:
+        profile = await get_agent_profile(req.agent_profile_id)
+        if profile:
+            profile_source = "selected"
+            profile_name = profile.get("name")
+            if not effective_prompt and profile.get("system_prompt"):
+                effective_prompt = profile["system_prompt"]
+                prompt_source = "agent_profile"
+            effective_voice = profile.get("voice")
+            effective_model = profile.get("model")
+            effective_tools = profile.get("enabled_tools")
+        else:
+            await log_error("server", "Agent profile missing; using default fallback", f"profile_id={req.agent_profile_id}", "warning")
+    if not req.agent_profile_id or profile_source == "none":
+        profile = await get_default_agent_profile()
+        if profile:
+            profile_source = "default"
+            profile_name = profile.get("name")
+            if not effective_prompt and profile.get("system_prompt"):
+                effective_prompt = profile["system_prompt"]
+                prompt_source = "default_agent_profile"
+            effective_voice = effective_voice or profile.get("voice")
+            effective_model = effective_model or profile.get("model")
+            effective_tools = profile.get("enabled_tools")
+        else:
+            profile_source = "built_in_fallback"
+
+    if not effective_prompt:
+        effective_prompt = await get_setting("system_prompt", "") or None
+        prompt_source = "global" if effective_prompt else "default"
+
+    metadata: dict = {
+        "phone_number": phone,
+        "lead_name": req.lead_name,
+        "business_name": req.business_name,
+        "service_type": req.service_type,
+        "system_prompt": effective_prompt,
+        "agent_profile_id": profile.get("id") if profile_source in ("selected", "default") else req.agent_profile_id,
+        "agent_profile_name": profile_name,
+        "agent_profile_source": profile_source,
+        "system_prompt_override_present": bool(req.system_prompt),
+        "prompt_source": prompt_source,
+        "canonical_phone": phone,
+        "direction": "inbound",
+    }
+    if effective_voice:
+        metadata["voice_override"] = effective_voice
+    if effective_model:
+        metadata["model_override"] = effective_model
+    if effective_tools is not None:
+        metadata["tools_override"] = effective_tools
+
+    lk = None
+    session = None
+    _active_call_started(room_name, phone, req.lead_name, "connected")
+    call_session_id = await create_call_session(
+        room_name=room_name,
+        direction="inbound",
+        phone_number=phone,
+        lead_name=req.lead_name,
+        status="connected",
+        metadata=metadata,
+    )
+    metadata["call_session_id"] = call_session_id
+    try:
+        from livekit import api as lk_api
+        session = livekit_client_session()
+        lk = lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+        try:
+            await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
+        except Exception:
+            pass
+        await lk.agent_dispatch.create_dispatch(
+            lk_api.CreateAgentDispatchRequest(
+                agent_name="inbound-caller", room=room_name, metadata=json.dumps(metadata)
+            )
+        )
+        await log_error(
+            "server",
+            f"Inbound call dispatched for {phone}",
+            (
+                f"room={room_name}; phone={phone}; agent_profile_id={req.agent_profile_id or ''}; "
+                f"profile_source={profile_source}; prompt_source={prompt_source}; system_prompt_override_present={bool(req.system_prompt)}; "
+                f"tools_override_present={effective_tools is not None}; lead_name={req.lead_name}; "
+                f"business_name={req.business_name}; service_type={req.service_type}"
+            ),
+            "info",
+        )
+        return {"status": "dispatched", "room": room_name, "phone": phone, "call_session_id": call_session_id}
+    except Exception as exc:
+        logger.error("Inbound dispatch error: %s", exc)
+        _active_call_failed(room_name, f"Inbound dispatch failed: {exc}")
+        await update_call_session(
+            call_session_id,
+            status="failed",
+            ended_at=datetime.now().isoformat(),
+            reason=f"inbound dispatch failed: {exc}",
+        )
+        raise HTTPException(500, f"Inbound dispatch failed: {exc}")
     finally:
         try:
             if lk:
