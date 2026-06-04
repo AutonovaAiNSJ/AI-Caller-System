@@ -16,6 +16,10 @@ from db import (
 from gcal import GoogleCalendarManager
 
 logger = logging.getLogger("appointment-tools")
+try:
+    GCAL_TIMEOUT_SECONDS = float(os.getenv("GOOGLE_CALENDAR_TIMEOUT_SECONDS", "10"))
+except ValueError:
+    GCAL_TIMEOUT_SECONDS = 10.0
 
 
 MANDATORY_BOOKING_TOOLS = ["check_availability", "book_appointment", "end_call"]
@@ -27,10 +31,38 @@ DEFAULT_TOOL_NAMES = [
 
 
 async def _log(msg: str, detail: str = "", level: str = "info") -> None:
+    if level == "info":
+        logger.info("%s %s", msg, detail)
+    elif level == "warning":
+        logger.warning("%s %s", msg, detail)
+    else:
+        logger.error("%s %s", msg, detail)
+    try:
+        asyncio.create_task(_persist_log_entry(msg, detail, level))
+    except RuntimeError:
+        pass
+
+
+async def _persist_log_entry(msg: str, detail: str = "", level: str = "info") -> None:
     try:
         await log_error("agent", msg, detail, level)
     except Exception:
-        pass
+        logger.debug("Failed to persist tool log", exc_info=True)
+
+
+async def _gcal_call(label: str, func, *args):
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(func, *args),
+            timeout=GCAL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        await _log(
+            f"Google Calendar {label} timed out",
+            f"timeout_seconds={GCAL_TIMEOUT_SECONDS}",
+            "error",
+        )
+        raise
 
 
 class AppointmentTools(llm.ToolContext):
@@ -49,6 +81,9 @@ class AppointmentTools(llm.ToolContext):
         self._end_call_called = False
         self._final_log_written = False
         self._fallback_log_attempted = False
+        self._transfer_invoked = False
+        self._transfer_succeeded = False
+        self._transfer_failure_reason: Optional[str] = None
         super().__init__(tools=[])
 
     def build_tool_list(self, enabled: list) -> list:
@@ -83,11 +118,17 @@ class AppointmentTools(llm.ToolContext):
             if gcal_json:
                 await _log("Availability check using Google Calendar", f"calendar_id={gcal_id}", "info")
                 manager = GoogleCalendarManager(gcal_json, gcal_id)
-                calendar_available = manager.is_slot_available(date, time, duration)
+                try:
+                    calendar_available = await _gcal_call("availability check", manager.is_slot_available, date, time, duration)
+                except asyncio.TimeoutError:
+                    return "Calendar check is taking too long. Please suggest another time, or I can arrange a callback."
                 if local_available and calendar_available:
                     await _log("Availability result", f"available via Google Calendar date={date} time={time}", "info")
                     return "available"
-                next_slot = manager.get_next_available(date, time, duration)
+                try:
+                    next_slot = await _gcal_call("next available lookup", manager.get_next_available, date, time, duration)
+                except asyncio.TimeoutError:
+                    return "Calendar check is taking too long. Please suggest another time, or I can arrange a callback."
                 await _log(
                     "Availability result",
                     f"unavailable via Google Calendar date={date} time={time}; next={next_slot}",
@@ -141,8 +182,20 @@ class AppointmentTools(llm.ToolContext):
                 duration = 30
 
             manager = GoogleCalendarManager(gcal_json, gcal_id) if gcal_json else None
-            if manager and not manager.is_slot_available(date, time, duration):
-                next_slot = manager.get_next_available(date, time, duration)
+            if manager:
+                try:
+                    calendar_available = await _gcal_call("pre-book availability check", manager.is_slot_available, date, time, duration)
+                except asyncio.TimeoutError:
+                    self._booking_error = "Google Calendar availability check timed out"
+                    return "Calendar check is taking too long. I can arrange a callback to confirm this slot."
+            else:
+                calendar_available = True
+            if manager and not calendar_available:
+                try:
+                    next_slot = await _gcal_call("pre-book next available lookup", manager.get_next_available, date, time, duration)
+                except asyncio.TimeoutError:
+                    self._booking_error = "Google Calendar next slot lookup timed out"
+                    return "Calendar check is taking too long. I can arrange a callback to confirm another slot."
                 self._booking_error = f"Google Calendar slot unavailable; next={next_slot}"
                 await _log("Appointment booking blocked", self._booking_error, "warning")
                 return f"That slot is unavailable. The next available slot is {next_slot}."
@@ -161,7 +214,7 @@ class AppointmentTools(llm.ToolContext):
             if manager:
                 try:
                     await _log("Google Calendar sync started", f"booking_id={booking_id} calendar_id={gcal_id}", "info")
-                    event_id, event_link = manager.book_event(name, phone, date, time, service, duration)
+                    event_id, event_link = await _gcal_call("event creation", manager.book_event, name, phone, date, time, service, duration)
                     if event_id or event_link:
                         await update_appointment_gcal(booking_id, event_id or "", event_link or "")
                     await _log(
@@ -289,10 +342,13 @@ class AppointmentTools(llm.ToolContext):
     @llm.function_tool
     async def transfer_to_human(self, reason: str) -> str:
         """
-        Transfer the call to a human agent via SIP REFER.
-        Call when lead requests a human, is angry, or has a complex issue.
+        Transfer the active SIP call to a human phone number using LiveKit SIP REFER.
+        ALWAYS call this when the lead asks for a human, person, representative,
+        woman, female agent, or transfer. Do not say transfer is unavailable until
+        this tool returns failure.
         reason: why you're transferring
         """
+<<<<<<< Updated upstream
         destination = os.getenv("DEFAULT_TRANSFER_NUMBER", "")
         if not destination:
             return "Transfer unavailable: no fallback number configured."
@@ -301,14 +357,106 @@ class AppointmentTools(llm.ToolContext):
             destination = f"sip:{clean}@{self._sip_domain}" if self._sip_domain else f"tel:{clean}"
         elif not destination.startswith("sip:"):
             destination = f"sip:{destination}"
+=======
+        self._transfer_invoked = True
+        human_destination = (await get_setting("HUMAN_TRANSFER_NUMBER", "")).strip()
+        fallback_destination = (await get_setting("DEFAULT_TRANSFER_NUMBER", "")).strip()
+        destination = human_destination or fallback_destination
+        safe_destination = f"***{destination[-4:]}" if len(destination) >= 4 else "***"
+        e164_valid = bool(destination.startswith("+") and destination[1:].isdigit() and 8 <= len(destination[1:]) <= 15)
+        participant_identities = [p.identity for p in self.ctx.room.remote_participants.values()]
+        await log_error(
+            "transfer",
+            "TRANSFER_TRACE_TOOL_INVOKED",
+            (
+                f"room_name={self.ctx.room.name}; phone={self.phone_number or ''}; "
+                f"participant_identity=; participant_identities={participant_identities}; reason={reason}"
+            ),
+            "warning",
+        )
+        await log_error(
+            "transfer",
+            "TRANSFER_TRACE_CONFIG",
+            (
+                f"human_transfer_number_present={bool(human_destination)}; "
+                f"default_transfer_number_present={bool(fallback_destination)}; "
+                f"using={'HUMAN_TRANSFER_NUMBER' if human_destination else ('DEFAULT_TRANSFER_NUMBER' if fallback_destination else 'none')}; "
+                f"destination_e164_valid={e164_valid}"
+            ),
+            "warning",
+        )
+        if not destination:
+            self._transfer_failure_reason = "missing_config"
+            await log_error(
+                "transfer",
+                "Transfer unavailable: no destination configured",
+                f"reason={reason}; room={self.ctx.room.name}; phone={self.phone_number or ''}",
+                "warning",
+            )
+            await log_error(
+                "transfer",
+                "TRANSFER_TRACE_CALLBACK_FALLBACK",
+                "reason=missing_config; outcome=callback_requested",
+                "warning",
+            )
+            await self.end_call(
+                outcome="callback_requested",
+                reason=f"human transfer unavailable: {reason}" if reason else "human transfer unavailable",
+            )
+            return "I couldn't transfer you right now. I'll have someone follow up."
+>>>>>>> Stashed changes
         participant_identity = f"sip_{self.phone_number}" if self.phone_number else None
         if not participant_identity:
             for p in self.ctx.room.remote_participants.values():
                 participant_identity = p.identity
                 break
+        await log_error(
+            "transfer",
+            "TRANSFER_TRACE_PARTICIPANT_LOOKUP",
+            (
+                f"room_name={self.ctx.room.name}; expected_identity="
+                f"{f'sip_{self.phone_number}' if self.phone_number else ''}; "
+                f"participant_identities={participant_identities}; selected_participant_identity={participant_identity or ''}"
+            ),
+            "warning",
+        )
         if not participant_identity:
+<<<<<<< Updated upstream
             return "Transfer failed: could not identify caller."
         try:
+=======
+            self._transfer_failure_reason = "missing_sip_participant"
+            await log_error(
+                "transfer",
+                "Transfer failed: no participant identity",
+                f"reason={reason}; room={self.ctx.room.name}; transfer_to={safe_destination}",
+                "warning",
+            )
+            await log_error(
+                "transfer",
+                "TRANSFER_TRACE_CALLBACK_FALLBACK",
+                "reason=missing_sip_participant; outcome=callback_requested",
+                "warning",
+            )
+            await self.end_call(
+                outcome="callback_requested",
+                reason=f"human transfer failed: caller identity unavailable; {reason}" if reason else "human transfer failed: caller identity unavailable",
+            )
+            return "I couldn't transfer you right now. I'll have someone follow up."
+        try:
+            await log_error(
+                "transfer",
+                "TRANSFER_TRACE_REQUEST",
+                f"room_name={self.ctx.room.name}; participant_identity={participant_identity}; destination_redacted={safe_destination}",
+                "warning",
+            )
+            await log_error(
+                "transfer",
+                "transfer_request_started",
+                f"reason={reason}; room_name={self.ctx.room.name}; participant_identity={participant_identity}; transfer_to={safe_destination}",
+                "info",
+            )
+>>>>>>> Stashed changes
             await self.ctx.api.sip.transfer_sip_participant(
                 api.TransferSIPParticipantRequest(
                     room_name=self.ctx.room.name,
@@ -316,9 +464,79 @@ class AppointmentTools(llm.ToolContext):
                     transfer_to=destination, play_dialtone=False,
                 )
             )
+<<<<<<< Updated upstream
             return "Transferring you to a human agent now. Please hold."
         except Exception:
             return "Transfer failed. Please call us back directly."
+=======
+        except Exception as exc:
+            self._transfer_failure_reason = f"{type(exc).__name__}: {exc}"
+            await log_error(
+                "transfer",
+                "transfer_failed",
+                f"room_name={self.ctx.room.name}; participant_identity={participant_identity}; transfer_to={safe_destination}; error={exc}",
+                "error",
+            )
+            await log_error(
+                "transfer",
+                "TRANSFER_TRACE_FAILURE",
+                f"exception_type={type(exc).__name__}; exception_message={exc}",
+                "error",
+            )
+            await log_error(
+                "transfer",
+                "TRANSFER_TRACE_CALLBACK_FALLBACK",
+                "reason=livekit_transfer_failure; outcome=callback_requested",
+                "warning",
+            )
+            await self.end_call(
+                outcome="callback_requested",
+                reason=f"human transfer failed: {reason}" if reason else "human transfer failed",
+            )
+            return "I couldn't transfer you right now. I'll have someone follow up."
+
+        self._transfer_succeeded = True
+        await log_error(
+            "transfer",
+            "transfer_success",
+            f"room_name={self.ctx.room.name}; participant_identity={participant_identity}; transfer_to={safe_destination}",
+            "info",
+        )
+        await log_error(
+            "transfer",
+            "TRANSFER_TRACE_SUCCESS",
+            f"room_name={self.ctx.room.name}; participant_identity={participant_identity}; destination_redacted={safe_destination}",
+            "warning",
+        )
+        self._end_call_called = True
+        duration = int(time.time() - self._call_start_time)
+        try:
+            await log_call(
+                phone_number=self.phone_number or "unknown",
+                lead_name=self.lead_name,
+                outcome="transferred",
+                reason=reason or "human transfer requested",
+                duration_seconds=duration,
+                recording_url=self.recording_url,
+                notes=f"Transferred to human number ending {destination[-4:]}" if destination else None,
+                direction=self.direction,
+                call_session_id=self.call_session_id,
+            )
+            self._final_log_written = True
+        except Exception as exc:
+            self._final_log_written = True
+            await log_error(
+                "transfer",
+                "Human transfer call log failed",
+                f"room={self.ctx.room.name}; outcome=transferred; error={exc}",
+                "error",
+            )
+        try:
+            await self.ctx.shutdown()
+        except Exception:
+            pass
+        return "I'll transfer you now."
+>>>>>>> Stashed changes
 
     @llm.function_tool
     async def send_sms_confirmation(self, phone: str, message: str) -> str:

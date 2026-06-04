@@ -59,6 +59,10 @@ app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
 _running_campaigns: set[str] = set()
 _auth_warning_logged = False
 _active_calls: dict[str, dict] = {}
+ACTIVE_TRANSCRIPT_RECENCY_SECONDS = 120
+ACTIVE_ENDED_RETENTION_SECONDS = 60
+ACTIVE_NO_ACTIVITY_TIMEOUT_SECONDS = 600
+ACTIVE_MAX_DURATION_SECONDS = 3600
 
 
 def _is_local_request(request: Request) -> bool:
@@ -178,6 +182,25 @@ def _active_call_failed(room_name: str, last_event: str) -> None:
     _active_call_update(room_name, "failed", last_event)
 
 
+def _active_call_cleanup(now: Optional[float] = None) -> None:
+    now = now or time.time()
+    for room, call in list(_active_calls.items()):
+        status = call.get("status") or "dispatching"
+        started_at = float(call.get("started_at") or now)
+        updated_at = float(call.get("updated_at") or started_at)
+        ended_at = call.get("ended_at")
+        if ended_at and now - float(ended_at) > ACTIVE_ENDED_RETENTION_SECONDS:
+            _active_calls.pop(room, None)
+            continue
+        if status not in ("ended", "failed") and now - updated_at > ACTIVE_NO_ACTIVITY_TIMEOUT_SECONDS:
+            _active_calls.pop(room, None)
+            logger.info("Active call pruned after inactivity: room=%s", room)
+            continue
+        if status not in ("ended", "failed") and now - started_at > ACTIVE_MAX_DURATION_SECONDS:
+            _active_calls.pop(room, None)
+            logger.warning("Active call pruned after max duration: room=%s", room)
+
+
 def livekit_client_session() -> aiohttp.ClientSession:
     """Create an aiohttp session for LiveKit API calls with TLS verification on by default."""
     allow_insecure = os.getenv("ALLOW_INSECURE_SSL", "false").lower() in ("1", "true", "yes")
@@ -201,6 +224,28 @@ class CallRequest(BaseModel):
     agent_profile_id: Optional[str] = None
 
 
+<<<<<<< Updated upstream
+=======
+class SimulateCallRequest(BaseModel):
+    lead_name: str = "there"
+    business_name: str = "our company"
+    service_type: str = "our service"
+    system_prompt: Optional[str] = None
+    agent_profile_id: Optional[str] = None
+
+
+class InboundDispatchRequest(BaseModel):
+    room_name: str
+    phone: Optional[str] = None
+    participant_identity: Optional[str] = None
+    lead_name: str = "there"
+    business_name: str = "our company"
+    service_type: str = "our service"
+    system_prompt: Optional[str] = None
+    agent_profile_id: Optional[str] = None
+
+
+>>>>>>> Stashed changes
 class AgentProfileRequest(BaseModel):
     name: str
     voice: str = "Aoede"
@@ -220,6 +265,10 @@ class SettingsRequest(BaseModel):
 
 class NotesRequest(BaseModel):
     notes: str
+
+
+class SimCallEndRequest(BaseModel):
+    room_name: str
 
 
 class CampaignRequest(BaseModel):
@@ -376,15 +425,17 @@ async def api_get_calls(page: int = 1, limit: int = 20):
 @app.get("/api/calls/active")
 async def api_get_active_calls():
     now = time.time()
+    _active_call_cleanup(now)
     transcripts = await get_recent_transcripts(limit=200)
     transcript_by_room: dict[str, dict] = {}
     for row in transcripts:
         room = row.get("room_name")
-        if room and room not in transcript_by_room:
+        transcript_ts = _iso_to_epoch(row.get("created_at") or "")
+        transcript_is_recent = bool(transcript_ts and now - transcript_ts <= ACTIVE_TRANSCRIPT_RECENCY_SECONDS)
+        if room and transcript_is_recent and room not in transcript_by_room:
             transcript_by_room[room] = row
         if room and room not in _active_calls:
-            transcript_ts = _iso_to_epoch(row.get("created_at") or "")
-            if transcript_ts and now - transcript_ts <= 60:
+            if transcript_is_recent and not room.startswith("sim-"):
                 phone_guess = ""
                 if room.startswith("call-"):
                     phone_guess = "+" + room.split("-")[1]
@@ -406,7 +457,7 @@ async def api_get_active_calls():
     out = []
     for room, call in list(_active_calls.items()):
         ended_at = call.get("ended_at")
-        if ended_at and now - float(ended_at) > 60:
+        if ended_at and now - float(ended_at) > ACTIVE_ENDED_RETENTION_SECONDS:
             _active_calls.pop(room, None)
             continue
 
@@ -419,6 +470,9 @@ async def api_get_active_calls():
             if status not in ("ended", "failed"):
                 status = "connected"
                 last_event = f"Latest transcript from {latest_transcript.get('speaker') or 'call'}"
+                call["status"] = status
+                call["last_event"] = last_event
+                call["updated_at"] = max(float(call.get("updated_at") or 0), _iso_to_epoch(latest_transcript.get("created_at") or "") or now)
 
         started_at = float(call.get("started_at") or now)
         for log in recent_logs:
@@ -430,13 +484,24 @@ async def api_get_active_calls():
                 call["ended_at"] = call.get("ended_at") or now
                 break
 
+        if status not in ("ended", "failed") and now - float(call.get("updated_at") or started_at) > ACTIVE_NO_ACTIVITY_TIMEOUT_SECONDS:
+            _active_calls.pop(room, None)
+            continue
+        if status not in ("ended", "failed") and now - started_at > ACTIVE_MAX_DURATION_SECONDS:
+            _active_calls.pop(room, None)
+            continue
+
+        if call.get("ended_at") and now - float(call.get("ended_at")) > ACTIVE_ENDED_RETENTION_SECONDS:
+            _active_calls.pop(room, None)
+            continue
+
         duration = int((call.get("ended_at") or now) - started_at)
         out.append({
             "room_name": room,
             "phone": call.get("phone") or "",
             "lead_name": call.get("lead_name") or "there",
             "status": status,
-            "duration_seconds": max(duration, 0),
+            "duration_seconds": max(0, min(duration, ACTIVE_MAX_DURATION_SECONDS)),
             "last_event": last_event,
             "last_transcript_snippet": snippet[:240],
             "transcript_available": bool(latest_transcript),
@@ -940,8 +1005,18 @@ async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
 
 
 @app.post("/api/simulate-call")
-async def simulate_call():
+async def simulate_call(req: SimulateCallRequest):
     room_name = f"sim-{random.randint(1000,9999)}"
+    await log_error(
+        "server",
+        "SIM_TRACE_BACKEND_REQUEST",
+        (
+            f"room={room_name}; lead_name={req.lead_name}; business_name={req.business_name}; "
+            f"service_type={req.service_type}; agent_profile_id={req.agent_profile_id or ''}; "
+            f"system_prompt_present={bool(req.system_prompt)}"
+        ),
+        "warning",
+    )
 
     url = os.getenv("LIVEKIT_URL")
     key = os.getenv("LIVEKIT_API_KEY")
@@ -962,20 +1037,117 @@ async def simulate_call():
 
     room_token = token.to_jwt()
 
+    effective_prompt = req.system_prompt
+    effective_voice = None
+    effective_model = None
+    effective_tools = None
+    profile = None
+    profile_name = None
+    profile_source = "none"
+    prompt_source = "simulate_override" if req.system_prompt else "none"
+
+    if req.agent_profile_id:
+        profile = await get_agent_profile(req.agent_profile_id)
+        if profile:
+            profile_source = "selected"
+            profile_name = profile.get("name")
+            if not effective_prompt and profile.get("system_prompt"):
+                effective_prompt = profile["system_prompt"]
+                prompt_source = "simulate_profile"
+            effective_voice = profile.get("voice")
+            effective_model = profile.get("model")
+            effective_tools = profile.get("enabled_tools")
+        else:
+            await log_error("server", "Simulated call agent profile missing; using default fallback", f"profile_id={req.agent_profile_id}", "warning")
+
+    if not req.agent_profile_id or profile_source == "none":
+        profile = await get_default_agent_profile()
+        if profile:
+            profile_source = "default"
+            profile_name = profile.get("name")
+            if not effective_prompt and profile.get("system_prompt"):
+                effective_prompt = profile["system_prompt"]
+                prompt_source = "simulate_profile"
+            effective_voice = effective_voice or profile.get("voice")
+            effective_model = effective_model or profile.get("model")
+            effective_tools = profile.get("enabled_tools")
+        else:
+            profile_source = "built_in_fallback"
+
+    if not effective_prompt:
+        effective_prompt = await get_setting("system_prompt", "") or None
+        prompt_source = "simulate_global" if effective_prompt else "simulate_default"
+
+    resolved_profile_id = profile.get("id") if profile_source in ("selected", "default") and profile else req.agent_profile_id
+    await log_error(
+        "server",
+        "SIM_TRACE_PROFILE_RESOLUTION",
+        (
+            f"room={room_name}; requested_profile_id={req.agent_profile_id or ''}; "
+            f"resolved_profile_id={resolved_profile_id or ''}; profile_name={profile_name or ''}; "
+            f"profile_source={profile_source}; prompt_source={prompt_source}; "
+            f"voice_present={bool(effective_voice)}; model_present={bool(effective_model)}; "
+            f"tools_present={effective_tools is not None}"
+        ),
+        "warning",
+    )
+    metadata = {
+        "lead_name": req.lead_name or "there",
+        "phone_number": None,
+        "business_name": req.business_name or "our company",
+        "service_type": req.service_type or "our service",
+        "system_prompt": effective_prompt,
+        "agent_profile_id": resolved_profile_id,
+        "agent_profile_name": profile_name,
+        "agent_profile_source": profile_source,
+        "system_prompt_override_present": bool(req.system_prompt),
+        "prompt_source": prompt_source,
+        "canonical_phone": None,
+        "direction": "outbound",
+    }
+    if effective_voice:
+        metadata["voice_override"] = effective_voice
+    if effective_model:
+        metadata["model_override"] = effective_model
+    if effective_tools is not None:
+        metadata["tools_override"] = effective_tools
+
+    await log_error(
+        "server",
+        "SIM_TRACE_DISPATCH_METADATA",
+        (
+            f"room={room_name}; lead_name={metadata.get('lead_name')}; "
+            f"business_name={metadata.get('business_name')}; service_type={metadata.get('service_type')}; "
+            f"agent_profile_id={metadata.get('agent_profile_id') or ''}; "
+            f"agent_profile_name={metadata.get('agent_profile_name') or ''}; "
+            f"agent_profile_source={metadata.get('agent_profile_source')}; "
+            f"prompt_source={metadata.get('prompt_source')}; "
+            f"system_prompt_present={bool(metadata.get('system_prompt'))}; "
+            f"tools_override_present={'tools_override' in metadata}"
+        ),
+        "warning",
+    )
+
+    await log_error(
+        "server",
+        "Simulated call requested",
+        (
+            f"room={room_name}; agent_profile_id={req.agent_profile_id or ''}; "
+            f"profile_name={profile_name or ''}; profile_source={profile_source}; "
+            f"business_name={metadata['business_name']}; service_type={metadata['service_type']}; "
+            f"lead_name={metadata['lead_name']}; prompt_source={prompt_source}; "
+            f"tools_override_present={effective_tools is not None}"
+        ),
+        "info",
+    )
+
     livekit_api = api.LiveKitAPI(url=url, api_key=key, api_secret=secret)
     try:
         await livekit_api.room.create_room(
             api.CreateRoomRequest(name=room_name)
         )
-
-        metadata = {
-        "lead_name": "there",
-        "phone_number": None,
-        "business_name": "our company",
-        "service_type": "our service",
-        "prompt_source": "simulate",
-        "canonical_phone": None,
-        }
+        _active_call_started(room_name, "", metadata["lead_name"], "connected")
+        _active_call_update(room_name, "connected", "Simulated call started")
 
         await livekit_api.agent_dispatch.create_dispatch(
             api.CreateAgentDispatchRequest(
@@ -992,6 +1164,12 @@ async def simulate_call():
         "token": room_token,
         "livekit_url": url,
     }
+
+
+@app.post("/api/simulate-call/end")
+async def simulate_call_end(req: SimCallEndRequest):
+    _active_call_update(req.room_name, "ended", "Simulation ended by browser")
+    return {"status": "ended", "room_name": req.room_name}
 
 
 if __name__ == "__main__":
