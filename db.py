@@ -22,6 +22,12 @@ DEFAULTS = {
     "SUPABASE_URL":            os.getenv("SUPABASE_URL", ""),
     "SUPABASE_SERVICE_KEY":    os.getenv("SUPABASE_SERVICE_KEY", ""),
     "DEEPGRAM_API_KEY":        os.getenv("DEEPGRAM_API_KEY", ""),
+    "SMTP_HOST":               os.getenv("SMTP_HOST", ""),
+    "SMTP_PORT":               os.getenv("SMTP_PORT", ""),
+    "SMTP_USERNAME":           os.getenv("SMTP_USERNAME", ""),
+    "SMTP_PASSWORD":           os.getenv("SMTP_PASSWORD", ""),
+    "SMTP_FROM_EMAIL":         os.getenv("SMTP_FROM_EMAIL", ""),
+    "SMTP_DISPLAY_NAME":       os.getenv("SMTP_DISPLAY_NAME", ""),
 }
 
 
@@ -36,7 +42,7 @@ SENSITIVE_KEYS = {
     "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "GOOGLE_API_KEY",
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
-    "DEEPGRAM_API_KEY", "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON",
+    "DEEPGRAM_API_KEY", "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "SMTP_PASSWORD",
 }
 
 
@@ -97,6 +103,7 @@ async def get_all_settings() -> dict:
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_REGION", "S3_BUCKET",
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
         "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "GOOGLE_CALENDAR_ID", "GOOGLE_CALENDAR_SLOT_DURATION",
+        "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL", "SMTP_DISPLAY_NAME",
         "ENABLED_TOOLS",
     ]
     out: dict = {}
@@ -198,15 +205,18 @@ async def clear_errors() -> None:
 
 # ── Appointments ──────────────────────────────────────────────────────────────
 
-async def insert_appointment(name: str, phone: str, date: str, time: str, service: str) -> str:
+async def insert_appointment(name: str, phone: str, date: str, time: str, service: str, email: Optional[str] = None) -> str:
     full_id = str(uuid.uuid4())
     booking_id = full_id[:8].upper()
     db = await _adb()
-    await db.table("appointments").insert({
+    payload = {
         "id": full_id, "name": name, "phone": phone,
         "date": date, "time": time, "service": service,
         "status": "booked", "created_at": datetime.now().isoformat(),
-    }).execute()
+    }
+    if email:
+        payload["email"] = email
+    await db.table("appointments").insert(payload).execute()
     return booking_id
 
 

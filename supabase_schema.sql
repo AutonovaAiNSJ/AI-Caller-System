@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     date TEXT NOT NULL,
     time TEXT NOT NULL,
     service TEXT NOT NULL,
+    email TEXT,
     status TEXT NOT NULL DEFAULT 'booked',
     created_at TEXT NOT NULL
 );
@@ -75,6 +76,7 @@ ALTER TABLE campaigns DISABLE ROW LEVEL SECURITY;
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calcom_booking_uid TEXT;
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS gcal_event_id TEXT;
 ALTER TABLE appointments ADD COLUMN IF NOT EXISTS gcal_event_link TEXT;
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS email TEXT;
 
 CREATE TABLE IF NOT EXISTS contact_memory (
     id TEXT PRIMARY KEY,

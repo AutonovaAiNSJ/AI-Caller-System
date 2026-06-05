@@ -28,10 +28,11 @@ async def _log(msg: str, detail: str = "", level: str = "info") -> None:
 class AppointmentTools(llm.ToolContext):
     """All function tools available to the appointment-booking agent."""
 
-    def __init__(self, ctx: agents.JobContext, phone_number: Optional[str] = None, lead_name: Optional[str] = None):
+    def __init__(self, ctx: agents.JobContext, phone_number: Optional[str] = None, lead_name: Optional[str] = None, business_name: Optional[str] = None):
         self.ctx = ctx
         self.phone_number = phone_number
         self.lead_name = lead_name
+        self.business_name = business_name or "our company"
         self._call_start_time = time.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
@@ -43,6 +44,7 @@ class AppointmentTools(llm.ToolContext):
             self.check_availability, self.book_appointment, self.end_call,
             self.transfer_to_human, self.send_sms_confirmation, self.lookup_contact,
             self.remember_details, self.book_calcom, self.cancel_calcom,
+            self.send_email,
         ]
         if not enabled:
             return all_methods
@@ -88,14 +90,14 @@ class AppointmentTools(llm.ToolContext):
             return "Unable to check availability right now — please suggest a date and I will confirm."
 
     @llm.function_tool
-    async def book_appointment(self, name: str, phone: str, date: str, time: str, service: str) -> str:
+    async def book_appointment(self, name: str, phone: str, date: str, time: str, service: str, email: str) -> str:
         """
-        Book an appointment after the lead has verbally confirmed date, time, and service.
+        Book an appointment after the lead has verbally confirmed date, time, service, and email.
         Call ONLY after the lead confirms all details.
-        name: lead's full name | phone: with country code | date: YYYY-MM-DD | time: HH:MM | service: type
+        name: lead's full name | phone: with country code | date: YYYY-MM-DD | time: HH:MM | service: type | email: lead's email address (required)
         """
         try:
-            booking_id = await insert_appointment(name, phone, date, time, service)
+            booking_id = await insert_appointment(name, phone, date, time, service, email)
             
             gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
             gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
@@ -114,8 +116,12 @@ class AppointmentTools(llm.ToolContext):
                 )
                 if event_id:
                     await update_appointment_gcal(booking_id, event_id, event_link)
+                    if email:
+                        self._trigger_confirmation_email(name, date, time, service, booking_id, email)
                     return f"Confirmed! Synced to Google Calendar. Booking ID: {booking_id}. See you on {date} at {time} for {service}."
             
+            if email:
+                self._trigger_confirmation_email(name, date, time, service, booking_id, email)
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
         except Exception as exc:
             logger.error("Error booking appointment: %s", exc)
@@ -267,6 +273,54 @@ class AppointmentTools(llm.ToolContext):
                 await compress_contact_memory(self.phone_number, response.text.strip())
         except Exception as exc:
             logger.warning("Memory compression failed: %s", exc)
+
+    def _trigger_confirmation_email(self, name: str, date: str, time: str, service: str, booking_id: str, email: str) -> None:
+        try:
+            from email_manager import EmailManager
+            subj = f"Appointment Confirmed: {service.capitalize()} at {self.business_name}"
+            body = f"""
+            <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #e0e0e0; max-width: 600px; margin: 0 auto; border: 1px solid #252525; padding: 24px; border-radius: 8px; background-color: #0d0d0d;">
+                <h2 style="color: #00ff88; margin-top: 0; border-bottom: 1px solid #252525; padding-bottom: 12px;">Appointment Confirmed!</h2>
+                <p>Hi <strong>{name}</strong>,</p>
+                <p>Your appointment has been successfully booked. Here are the details:</p>
+                <table style="width: 100%; border-collapse: collapse; margin: 20px 0; color: #e0e0e0;">
+                    <tr style="background: #161616;"><td style="padding: 10px; border: 1px solid #252525; font-weight: bold; width: 140px;">Service</td><td style="padding: 10px; border: 1px solid #252525;">{service}</td></tr>
+                    <tr><td style="padding: 10px; border: 1px solid #252525; font-weight: bold;">Date</td><td style="padding: 10px; border: 1px solid #252525;">{date}</td></tr>
+                    <tr style="background: #161616;"><td style="padding: 10px; border: 1px solid #252525; font-weight: bold;">Time</td><td style="padding: 10px; border: 1px solid #252525;">{time}</td></tr>
+                    <tr><td style="padding: 10px; border: 1px solid #252525; font-weight: bold;">Business</td><td style="padding: 10px; border: 1px solid #252525;">{self.business_name}</td></tr>
+                    <tr style="background: #161616;"><td style="padding: 10px; border: 1px solid #252525; font-weight: bold;">Booking ID</td><td style="padding: 10px; border: 1px solid #252525;">{booking_id}</td></tr>
+                </table>
+                <p>If you have any questions or need to reschedule, please contact us.</p>
+                <hr style="border: 0; border-top: 1px solid #252525; margin: 20px 0;"/>
+                <p style="font-size: 11px; color: #5a5a5a; text-align: center; margin: 0;">This email was sent automatically by OutboundAI assistant.</p>
+            </div>
+            """
+            asyncio.create_task(EmailManager.send_email_async(email, subj, body))
+        except Exception as e_exc:
+            logger.error("Failed to queue booking confirmation email: %s", e_exc)
+
+    @llm.function_tool
+    async def send_email(self, recipient_email: str, subject: str, body: str) -> str:
+        """
+        Send an email to the lead. Use this to send general information, booking confirmation details, or follow-up notes.
+        recipient_email: lead's email address | subject: email subject line | body: text body of the email (newlines are supported)
+        """
+        try:
+            from email_manager import EmailManager
+            html_body = body.replace("\n", "<br/>")
+            full_html = f"""
+            <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #e0e0e0; max-width: 600px; margin: 0 auto; border: 1px solid #252525; padding: 24px; border-radius: 8px; background-color: #0d0d0d;">
+                <h3 style="color: #00ccff; margin-top: 0; border-bottom: 1px solid #252525; padding-bottom: 10px;">Message from {self.business_name}</h3>
+                <p style="margin: 16px 0;">{html_body}</p>
+                <hr style="border: 0; border-top: 1px solid #252525; margin: 20px 0;"/>
+                <p style="font-size: 11px; color: #5a5a5a; text-align: center; margin: 0;">This email was sent automatically by OutboundAI assistant.</p>
+            </div>
+            """
+            asyncio.create_task(EmailManager.send_email_async(recipient_email, subject, full_html))
+            return f"Email queued to be sent to {recipient_email}."
+        except Exception as exc:
+            logger.error("Error in send_email tool: %s", exc)
+            return "Failed to send email due to a technical error."
 
     @llm.function_tool
     async def book_calcom(self, name: str, email: str, date: str, start_time: str, notes: str = "") -> str:

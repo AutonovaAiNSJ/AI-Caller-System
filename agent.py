@@ -251,7 +251,7 @@ async def entrypoint(ctx: agents.JobContext):
         custom_prompt=system_prompt,
     )
 
-    tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name)
+    tool_ctx = AppointmentTools(ctx, phone_number=phone_number, lead_name=lead_name, business_name=business_name)
 
     async def _persist_transcript(speaker: str, text: str) -> None:
         try:
