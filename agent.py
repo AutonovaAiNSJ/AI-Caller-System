@@ -49,9 +49,11 @@ MANDATORY TOOL CONTRACT:
 - Never say an appointment is booked, scheduled, or confirmed unless book_appointment returned a Booking ID.
 - Never say SMS was sent until send_sms_confirmation succeeds.
 - Never say a calendar event was created unless book_appointment reports Calendar sync success or a booking confirmation.
-- If the user asks to book, first collect date, time, service, name, and phone if missing.
+- If the user asks to book, first collect date, time, service, name, phone, and email if missing.
+- You MUST collect the email address and verify the email address verbally (e.g. read it back to confirm) before calling book_appointment.
 - Then call check_availability.
 - If available, call book_appointment.
+- When calling check_availability or book_appointment, you MUST pass the exact business_name and service_type from metadata as the expected_business_name and expected_service_type arguments.
 - Only after book_appointment succeeds may you say the booking is confirmed.
 - Only after book_appointment succeeds may you call end_call(outcome="booked").
 - If booking fails, say the team will follow up and use end_call(outcome="appointment_failed" or callback_requested).
@@ -324,6 +326,15 @@ async def entrypoint(ctx: agents.JobContext):
     )
     system_prompt = f"{system_prompt.rstrip()}{MANDATORY_TOOL_CONTRACT}"
 
+    # Prepend strict context lock to system prompt
+    context_lock = (
+        f"You are ONLY representing {business_name}.\n\n"
+        f"The ONLY service being discussed is {service_type}.\n\n"
+        f"Never invent industries, products, services, businesses, appointments, properties, medical services, insurance services, legal services, or any other domain.\n\n"
+        f"If the user asks about something unrelated to {service_type}, redirect the conversation back to the provided business context.\n\n"
+    )
+    system_prompt = context_lock + system_prompt
+
     # Tool precedence: mandatory booking tools are injected after the selected source.
     # Source order is global defaults, then profile/campaign/per-call metadata overrides.
     global_tool_names = await get_enabled_tools()
@@ -359,6 +370,8 @@ async def entrypoint(ctx: agents.JobContext):
         lead_name=lead_name,
         direction=direction,
         call_session_id=call_session_id,
+        business_name=business_name,
+        service_type=service_type,
     )
     transcript_saved = False
     call_answered = False
@@ -387,6 +400,15 @@ async def entrypoint(ctx: agents.JobContext):
             f"prompt_preview={_safe_preview(system_prompt)}"
         ),
     )
+    # Prompt Observability structured JSON logging
+    prompt_obs_detail = json.dumps({
+        "business_name": business_name,
+        "service_type": service_type,
+        "final_prompt_preview": system_prompt[:1000],
+        "resolved_tools": enabled_tools,
+        "full_prompt": system_prompt
+    }, indent=2)
+    await _log("info", f"Prompt Observability: business={business_name}, service={service_type}", prompt_obs_detail)
     await _log("info", "Mandatory tool contract appended", f"room={ctx.room.name}")
 
     async def _persist_transcript(speaker: str, text: str) -> None:

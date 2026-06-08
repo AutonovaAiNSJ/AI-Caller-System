@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import time
+import functools
+import traceback
 from datetime import datetime
 from typing import Optional
 
@@ -12,7 +14,7 @@ from db import (
     check_slot, get_next_available, insert_appointment, log_call, log_error,
     get_calls_by_phone, get_appointments_by_phone,
     add_contact_memory, get_contact_memory, compress_contact_memory,
-    get_setting, update_appointment_gcal,
+    get_setting, update_appointment_gcal, get_enabled_tools,
 )
 from gcal import GoogleCalendarManager
 
@@ -24,7 +26,54 @@ DEFAULT_TOOL_NAMES = [
     "check_availability", "book_appointment", "end_call",
     "transfer_to_human", "send_sms_confirmation", "lookup_contact",
     "remember_details", "book_calcom", "cancel_calcom",
+    "send_email",
 ]
+
+
+def log_tool_execution(func):
+    @functools.wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        tool_name = func.__name__
+        args_str = f"args={args}, kwargs={kwargs}"
+        start_time = time.time()
+        try:
+            result = await func(self, *args, **kwargs)
+            duration = time.time() - start_time
+            await log_error(
+                source="tools",
+                message=f"Tool '{tool_name}' executed successfully",
+                detail=f"Duration: {duration:.3f}s\nArguments: {args_str}\nResult: {result}",
+                level="info"
+            )
+            return result
+        except Exception as exc:
+            duration = time.time() - start_time
+            tb = traceback.format_exc()
+            await log_error(
+                source="tools",
+                message=f"Tool '{tool_name}' execution failed: {exc}",
+                detail=f"Duration: {duration:.3f}s\nArguments: {args_str}\nError: {exc}\nTraceback:\n{tb}",
+                level="error"
+            )
+            raise exc
+    return wrapper
+
+
+async def terminate_call_room(room_name: str, delay: float = 3.0):
+    await asyncio.sleep(delay)
+    try:
+        from db import get_setting
+        import livekit.api as lk_api
+        url = await get_setting("LIVEKIT_URL", "") or os.getenv("LIVEKIT_URL", "")
+        key = await get_setting("LIVEKIT_API_KEY", "") or os.getenv("LIVEKIT_API_KEY", "")
+        secret = await get_setting("LIVEKIT_API_SECRET", "") or os.getenv("LIVEKIT_API_SECRET", "")
+        if url and key and secret:
+            async with lk_api.LiveKitAPI(url=url, api_key=key, api_secret=secret) as api_client:
+                from livekit.api import DeleteRoomRequest
+                await api_client.room.delete_room(DeleteRoomRequest(room=room_name))
+                logger.info(f"Successfully deleted room {room_name} after delay")
+    except Exception as exc:
+        logger.error(f"Failed to delete room {room_name} after delay: {exc}")
 
 
 async def _log(msg: str, detail: str = "", level: str = "info") -> None:
@@ -44,12 +93,16 @@ class AppointmentTools(llm.ToolContext):
         lead_name: Optional[str] = None,
         direction: str = "outbound",
         call_session_id: Optional[str] = None,
+        business_name: Optional[str] = None,
+        service_type: Optional[str] = None,
     ):
         self.ctx = ctx
         self.phone_number = phone_number
         self.lead_name = lead_name
         self.direction = direction or "outbound"
         self.call_session_id = call_session_id
+        self.business_name = business_name
+        self.service_type = service_type
         self._call_start_time = time.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
@@ -79,20 +132,37 @@ class AppointmentTools(llm.ToolContext):
             self.check_availability, self.book_appointment, self.end_call,
             self.transfer_to_human, self.send_sms_confirmation, self.lookup_contact,
             self.remember_details, self.book_calcom, self.cancel_calcom,
+            self.send_email,
         ]
         name_map = {m.__name__: m for m in all_methods}
         return [name_map[n] for n in enabled if n in name_map]
 
     @llm.function_tool
-    async def check_availability(self, date: str, time: str) -> str:
+    @log_tool_execution
+    async def check_availability(
+        self,
+        date: str,
+        time: str,
+        expected_business_name: str,
+        expected_service_type: str
+    ) -> str:
         """
         Check whether a date/time slot is available for booking.
         Call this BEFORE attempting to book whenever the lead proposes a date/time.
         date format: YYYY-MM-DD  |  time format: HH:MM (24-hour)
+        expected_business_name: the business context name that the AI represents
+        expected_service_type: the service context that the AI is discussing
         Returns 'available' or 'unavailable: next available slot is <slot>'.
         """
         try:
-            await _log("Availability check started", f"date={date} time={time}", "info")
+            await _log("Availability check started", f"date={date} time={time} expected_biz={expected_business_name} expected_svc={expected_service_type}", "info")
+            
+            # Verify call metadata context matches parameters (Issue 5)
+            if (expected_business_name.strip().lower() != (self.business_name or "").strip().lower() or
+                expected_service_type.strip().lower() != (self.service_type or "").strip().lower()):
+                err_msg = f"Context validation failed: expected business '{self.business_name}' and service '{self.service_type}', but tool received '{expected_business_name}' and '{expected_service_type}'."
+                await log_error("tools", "Context validation failed in check_availability", err_msg, "error")
+                return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."
             gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
             gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
             duration_raw = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
@@ -133,11 +203,24 @@ class AppointmentTools(llm.ToolContext):
             return "Unable to check availability right now — please suggest a date and I will confirm."
 
     @llm.function_tool
-    async def book_appointment(self, name: str, phone: str, date: str, time: str, service: str) -> str:
+    @log_tool_execution
+    async def book_appointment(
+        self,
+        name: str,
+        phone: str,
+        email: str,
+        date: str,
+        time: str,
+        service: str,
+        expected_business_name: str,
+        expected_service_type: str
+    ) -> str:
         """
-        Book an appointment after the lead has verbally confirmed date, time, and service.
+        Book an appointment after the lead has verbally confirmed date, time, email, and service.
         Call ONLY after the lead confirms all details.
-        name: lead's full name | phone: with country code | date: YYYY-MM-DD | time: HH:MM | service: type
+        name: lead's full name | phone: with country code | email: lead's email address | date: YYYY-MM-DD | time: HH:MM | service: type
+        expected_business_name: the business context name that the AI represents
+        expected_service_type: the service context that the AI is discussing
         """
         try:
             self._booking_id = None
@@ -145,9 +228,23 @@ class AppointmentTools(llm.ToolContext):
             self._booking_error = None
             await _log(
                 "Appointment booking started",
-                f"name={name} phone={phone} date={date} time={time} service={service}",
+                f"name={name} phone={phone} email={email} date={date} time={time} service={service} expected_biz={expected_business_name} expected_svc={expected_service_type}",
                 "info",
             )
+            
+            # Service validation: reject services not matching current call context (Issue 1)
+            if service.strip().lower() != (self.service_type or "").strip().lower():
+                err_msg = f"Service validation failed: requested service '{service}' does not match call service context '{self.service_type}'."
+                await log_error("tools", "Service validation failed in book_appointment", err_msg, "error")
+                return f"Error: Cannot book appointment for '{service}'. The only service being discussed is '{self.service_type}'."
+
+            # Context validation (Issue 5)
+            if (expected_business_name.strip().lower() != (self.business_name or "").strip().lower() or
+                expected_service_type.strip().lower() != (self.service_type or "").strip().lower()):
+                err_msg = f"Context validation failed in book_appointment: expected business '{self.business_name}' and service '{self.service_type}', but tool received '{expected_business_name}' and '{expected_service_type}'."
+                await log_error("tools", "Context validation failed in book_appointment", err_msg, "error")
+                return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."
+
             if not await check_slot(date, time):
                 next_slot = await get_next_available(date, time)
                 self._booking_error = f"slot unavailable; next={next_slot}"
@@ -170,7 +267,7 @@ class AppointmentTools(llm.ToolContext):
                 return f"That slot is unavailable. The next available slot is {next_slot}."
 
             try:
-                booking_id = await insert_appointment(name, phone, date, time, service)
+                booking_id = await insert_appointment(name, phone, email, date, time, service)
             except Exception as exc:
                 self._booking_error = str(exc)
                 await _log("Supabase appointment insert failed", self._booking_error, "error")
@@ -180,6 +277,39 @@ class AppointmentTools(llm.ToolContext):
             self._booking_confirmed = True
             self._booking_error = None
             await _log("Supabase appointment insert succeeded", f"booking_id={booking_id}", "info")
+            
+            # Send confirmation email if tool is enabled
+            enabled = await get_enabled_tools()
+            if enabled and "send_email" in enabled:
+                subject = f"Appointment Confirmed: {service} on {date} at {time}"
+                body = (
+                    f"Hello {name},\n\n"
+                    f"Your appointment for {service} has been successfully scheduled.\n\n"
+                    f"Details:\n"
+                    f"- Date: {date}\n"
+                    f"- Time: {time}\n"
+                    f"- Booking ID: {booking_id}\n\n"
+                    f"If you need to reschedule or cancel, please contact us.\n\n"
+                    f"Best regards,\n"
+                    f"AI Assistant"
+                )
+                from email_manager import send_email_async
+                asyncio.create_task(send_email_async(email, subject, body))
+
+            # Force end_call execution (Issue 3)
+            async def force_end_call_safety():
+                await asyncio.sleep(15.0)  # Wait for confirmation and goodbye to be spoken
+                if not self._end_call_called:
+                    await _log("Forcing end_call safety fallback", "Booking succeeded but end_call was not called", "warning")
+                    for attempt in range(3):
+                        try:
+                            await self.end_call(outcome="booked", reason="forced fallback after successful booking")
+                            break
+                        except Exception as exc:
+                            await _log(f"Forced end_call retry {attempt+1}/3 failed", str(exc), "error")
+                            await asyncio.sleep(2.0)
+            asyncio.create_task(force_end_call_safety())
+
             if manager:
                 try:
                     await _log("Google Calendar sync started", f"booking_id={booking_id} calendar_id={gcal_id}", "info")
@@ -211,6 +341,7 @@ class AppointmentTools(llm.ToolContext):
             return "Technical issue saving the booking. Our team will confirm shortly."
 
     @llm.function_tool
+    @log_tool_execution
     async def end_call(self, outcome: str, reason: str = "") -> str:
         """
         End the call and log the outcome. ALWAYS call this before the call ends.
@@ -241,21 +372,38 @@ class AppointmentTools(llm.ToolContext):
         elif outcome == "booked" and self._booking_id:
             notes = f"Booking ID: {self._booking_id}"
             reason = f"{reason}; booking_id={self._booking_id}" if reason else f"booking_id={self._booking_id}"
+        
+        # Retry loop for call logging database persistence (Issue 3)
+        for attempt in range(3):
+            try:
+                await log_call(
+                    phone_number=self.phone_number or "unknown",
+                    lead_name=self.lead_name, outcome=outcome, reason=reason,
+                    duration_seconds=duration, recording_url=self.recording_url, notes=notes,
+                    direction=self.direction, call_session_id=self.call_session_id,
+                )
+                self._final_log_written = True
+                break
+            except Exception as exc:
+                logger.error(f"Failed to log call (attempt {attempt + 1}/3): {exc}")
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                else:
+                    logger.error("Call logging failed completely after 3 attempts.")
+
         try:
-            await log_call(
-                phone_number=self.phone_number or "unknown",
-                lead_name=self.lead_name, outcome=outcome, reason=reason,
-                duration_seconds=duration, recording_url=self.recording_url, notes=notes,
-                direction=self.direction, call_session_id=self.call_session_id,
-            )
-            self._final_log_written = True
+            # Schedule delayed room deletion (4 seconds)
+            asyncio.create_task(terminate_call_room(self.ctx.room.name, delay=4.0))
+            # Schedule graceful job shutdown (2 seconds)
+            async def delayed_shutdown():
+                await asyncio.sleep(2.0)
+                try:
+                    await self.ctx.shutdown()
+                except Exception:
+                    pass
+            asyncio.create_task(delayed_shutdown())
         except Exception as exc:
-            logger.error("Failed to log call: %s", exc)
-        try:
-            await asyncio.sleep(1)
-            await self.ctx.shutdown()   
-        except Exception:
-            pass
+            logger.error("Failed during end_call shutdown scheduling: %s", exc)
         return "Call ended."
 
     async def log_fallback_call_end(self, outcome: str, reason: str, detail: str = "") -> bool:
@@ -278,8 +426,14 @@ class AppointmentTools(llm.ToolContext):
         self._fallback_log_attempted = True
         duration = int(time.time() - self._call_start_time)
         notes = None
-        if self._booking_confirmed and self._booking_id:
-            notes = f"Booking ID: {self._booking_id}"
+        
+        # Correct fallback outcome to booked if booking succeeded (Issue 2)
+        if self._booking_confirmed:
+            outcome = "booked"
+            reason = f"{reason} (auto-corrected to booked because booking succeeded)"
+            if self._booking_id:
+                notes = f"Booking ID: {self._booking_id}"
+
         try:
             await log_call(
                 phone_number=self.phone_number or "unknown",
@@ -312,6 +466,7 @@ class AppointmentTools(llm.ToolContext):
             return False
 
     @llm.function_tool
+    @log_tool_execution
     async def transfer_to_human(self, reason: str) -> str:
         """
         Transfer the call to a human agent via SIP REFER.
@@ -332,11 +487,24 @@ class AppointmentTools(llm.ToolContext):
             destination = f"sip:{clean}@{self._sip_domain}" if self._sip_domain else f"tel:{clean}"
         elif not destination.startswith("sip:"):
             destination = f"sip:{destination}"
-        participant_identity = f"sip_{self.phone_number}" if self.phone_number else None
+        
+        participant_identity = None
+        # Prioritize remote participants whose identity starts with "sip_"
+        for p in self.ctx.room.remote_participants.values():
+            if p.identity and p.identity.startswith("sip_"):
+                participant_identity = p.identity
+                break
+        if not participant_identity and self.phone_number:
+            target = f"sip_{self.phone_number}"
+            for p in self.ctx.room.remote_participants.values():
+                if p.identity == target:
+                    participant_identity = p.identity
+                    break
         if not participant_identity:
             for p in self.ctx.room.remote_participants.values():
                 participant_identity = p.identity
                 break
+                
         if not participant_identity:
             await log_error(
                 "transfer",
@@ -366,16 +534,18 @@ class AppointmentTools(llm.ToolContext):
                 "info",
             )
             return "Transferring you to a human agent now. Please hold."
-        except Exception:
+        except Exception as exc:
+            tb = traceback.format_exc()
             await log_error(
                 "transfer",
-                "Transfer failed",
-                f"room={self.ctx.room.name}; destination={destination}; participant={participant_identity}",
+                f"Transfer failed: {exc}",
+                f"room={self.ctx.room.name}; destination={destination}; participant={participant_identity}\nTraceback:\n{tb}",
                 "error",
             )
             return "Transfer failed. Please call us back directly."
 
     @llm.function_tool
+    @log_tool_execution
     async def send_sms_confirmation(self, phone: str, message: str) -> str:
         """
         Send SMS confirmation after a successful booking. Skips silently if Twilio not configured.
@@ -398,6 +568,7 @@ class AppointmentTools(llm.ToolContext):
             return "SMS delivery failed, but booking is confirmed."
 
     @llm.function_tool
+    @log_tool_execution
     async def lookup_contact(self, phone: str) -> str:
         """
         Look up a contact's full history. Call at the START of every call before engaging.
@@ -431,6 +602,7 @@ class AppointmentTools(llm.ToolContext):
             return "Unable to retrieve contact history."
 
     @llm.function_tool
+    @log_tool_execution
     async def remember_details(self, insight: str) -> str:
         """
         Store a key insight about this lead for future calls.
@@ -470,6 +642,7 @@ class AppointmentTools(llm.ToolContext):
             logger.warning("Memory compression failed: %s", exc)
 
     @llm.function_tool
+    @log_tool_execution
     async def book_calcom(self, name: str, email: str, date: str, start_time: str, notes: str = "") -> str:
         """
         Book in Cal.com calendar after book_appointment succeeds.
@@ -502,6 +675,7 @@ class AppointmentTools(llm.ToolContext):
             return f"Cal.com booking failed: {exc}"
 
     @llm.function_tool
+    @log_tool_execution
     async def cancel_calcom(self, booking_uid: str, reason: str = "") -> str:
         """
         Cancel a Cal.com booking by UID.
@@ -523,3 +697,20 @@ class AppointmentTools(llm.ToolContext):
             return f"Cancelled Cal.com booking {booking_uid}."
         except Exception as exc:
             return f"Cancellation failed: {exc}"
+
+    @llm.function_tool
+    @log_tool_execution
+    async def send_email(self, recipient_email: str, subject: str, body: str) -> str:
+        """
+        Send a white-labeled email to a recipient.
+        recipient_email: lead's email address | subject: email subject | body: email body text
+        """
+        enabled = await get_enabled_tools()
+        if not enabled or "send_email" not in enabled:
+            return "Email skipped: send_email tool is currently disabled in system settings."
+        from email_manager import send_email_async
+        success = await send_email_async(recipient_email, subject, body)
+        if success:
+            return f"Email sent successfully to {recipient_email}."
+        else:
+            return "Email failed to send. Please check SMTP configuration."

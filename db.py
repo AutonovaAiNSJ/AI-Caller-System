@@ -39,6 +39,7 @@ SENSITIVE_KEYS = {
     "VOBIZ_PASSWORD", "TWILIO_AUTH_TOKEN", "SUPABASE_SERVICE_KEY",
     "AWS_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY", "CALCOM_API_KEY",
     "DEEPGRAM_API_KEY", "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "ADMIN_TOKEN",
+    "SMTP_PASSWORD",
 }
 
 
@@ -100,6 +101,7 @@ async def get_all_settings() -> dict:
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
         "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "GOOGLE_CALENDAR_ID", "GOOGLE_CALENDAR_SLOT_DURATION",
         "ENABLED_TOOLS",
+        "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_DISPLAY_NAME",
     ]
     out: dict = {}
     for k in KNOWN_KEYS:
@@ -200,15 +202,27 @@ async def clear_errors() -> None:
 
 # ── Appointments ──────────────────────────────────────────────────────────────
 
-async def insert_appointment(name: str, phone: str, date: str, time: str, service: str) -> str:
+async def insert_appointment(name: str, phone: str, email: Optional[str], date: str, time: str, service: str) -> str:
     full_id = str(uuid.uuid4())
     booking_id = full_id[:8].upper()
     db = await _adb()
-    await db.table("appointments").insert({
+    row = {
         "id": full_id, "name": name, "phone": phone,
         "date": date, "time": time, "service": service,
         "status": "booked", "created_at": datetime.now().isoformat(),
-    }).execute()
+    }
+    if email:
+        row["email"] = email
+    try:
+        await db.table("appointments").insert(row).execute()
+    except Exception as exc:
+        # If email column is missing in database, fall back to insert without it and log error
+        if email and "column" in str(exc).lower():
+            row.pop("email", None)
+            await db.table("appointments").insert(row).execute()
+            await log_error("db", "Email column missing in appointments table. Please run migration.", str(exc), "warning")
+        else:
+            raise
     return booking_id
 
 

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
+    email TEXT,
     date TEXT NOT NULL,
     time TEXT NOT NULL,
     service TEXT NOT NULL,
@@ -119,3 +120,6 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     created_at TEXT NOT NULL
 );
 ALTER TABLE agent_profiles DISABLE ROW LEVEL SECURITY;
+
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS email TEXT;
+
