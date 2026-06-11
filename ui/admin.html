@@ -695,7 +695,7 @@ async function bootstrapAuth(){
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
-    const res = await fetch('/api/auth/context', { headers });
+    const res = await fetch('/api/auth/context?scope=admin', { headers });
     if (!res.ok) {
       window.location.replace('/ui/login.html');
       return;

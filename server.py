@@ -240,9 +240,15 @@ async def admin_auth_middleware(request: Request, call_next):
                     logger.info(f"IS_ACTIVE={is_active}")
 
                     if user_role == "SUPER_ADMIN":
-                        imp_tenant = request.cookies.get("impersonated_tenant_id", "").strip()
-                        if imp_tenant:
-                            tenant_id = imp_tenant
+                        is_admin_request = (
+                            path == "/ui/admin.html"
+                            or path.startswith("/api/super-admin/")
+                            or request.query_params.get("scope") == "admin"
+                        )
+                        if not is_admin_request:
+                            imp_tenant = request.cookies.get("impersonated_tenant_id", "").strip()
+                            if imp_tenant:
+                                tenant_id = imp_tenant
                 else:
                     logger.info("[admin_auth_middleware] User record not found in database.")
             else:

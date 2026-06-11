@@ -1130,9 +1130,17 @@ async def invite_tenant_admin(tenant_id: str, admin_email: str, invited_by: str 
         raise ValueError(f"Could not store invite record: {exc}")
 
     # Send Supabase invite email via Admin API
+    app_url = os.getenv("APP_URL", "").strip() or os.getenv("SITE_URL", "").strip()
+    if not app_url:
+        raise RuntimeError("APP_URL not configured")
+    redirect_url = f"{app_url.rstrip('/')}/ui/login.html"
+
     try:
-        invite_res = await db.auth.admin.invite_user_by_email(email_clean)
-        logger.info(f"Supabase invite sent to {email_clean} for tenant {tenant_id}: {invite_res}")
+        invite_res = await db.auth.admin.invite_user_by_email(
+            email_clean,
+            options={"redirect_to": redirect_url}
+        )
+        logger.info(f"Supabase invite sent to {email_clean} for tenant {tenant_id} (redirect to {redirect_url}): {invite_res}")
     except Exception as exc:
         # Clean up the pending invite if Supabase rejects the email
         try:
