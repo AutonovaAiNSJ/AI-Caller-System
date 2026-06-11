@@ -360,13 +360,7 @@ async def get_setting(key: str, default: str = "") -> str:
 async def set_setting(key: str, value: str) -> None:
     db = await _adb()
     row = _with_tenant({"key": key, "value": value, "updated_at": _now()})
-    try:
-        await db.table("settings").upsert(row, on_conflict="tenant_id,key").execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("settings").upsert(row, on_conflict="key").execute()
+    await db.table("settings").upsert(row, on_conflict="tenant_id,key").execute()
 
 async def get_enabled_tools() -> Optional[list]:
     raw = await get_setting("ENABLED_TOOLS", "")
@@ -391,25 +385,14 @@ async def log_error(source: str, message: str, detail: str = "", level: str = "e
             "detail": detail[:2000],
             "timestamp": _now(),
         })
-        try:
-            await db.table("error_logs").insert(row).execute()
-        except Exception as exc:
-            if not _schema_missing(exc):
-                raise
-            row.pop("tenant_id", None)
-            await db.table("error_logs").insert(row).execute()
+        await db.table("error_logs").insert(row).execute()
     except Exception:
         pass
 
 async def get_errors(limit: int = 100) -> list:
     db = await _adb()
     query = db.table("error_logs").select("*").order("timestamp", desc=True).limit(limit)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def get_logs(level: Optional[str] = None, source: Optional[str] = None, limit: int = 200) -> list:
@@ -419,23 +402,13 @@ async def get_logs(level: Optional[str] = None, source: Optional[str] = None, li
         query = query.eq("level", level)
     if source:
         query = query.eq("source", source)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def clear_errors() -> None:
     db = await _adb()
     query = db.table("error_logs").delete().neq("id", "")
-    try:
-        await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        await query.execute()
+    await _tenant_query(query).execute()
 
 # ── Appointments ──────────────────────────────────────────────────────────────
 
@@ -454,17 +427,7 @@ async def insert_appointment(name: str, phone: str, email: Optional[str], date: 
         await db.table("appointments").insert(row).execute()
     except Exception as exc:
         err_msg = str(exc).lower()
-        if "tenant_id" in err_msg:
-            row.pop("tenant_id", None)
-            try:
-                await db.table("appointments").insert(row).execute()
-            except Exception as e2:
-                if email and "column" in str(e2).lower():
-                    row.pop("email", None)
-                    await db.table("appointments").insert(row).execute()
-                else:
-                    raise
-        elif email and "column" in err_msg:
+        if email and "column" in err_msg and "email" in err_msg:
             row.pop("email", None)
             await db.table("appointments").insert(row).execute()
         else:
@@ -564,13 +527,7 @@ async def log_call(
         row["recording_url"] = recording_url
     if notes:
         row["notes"] = notes
-    try:
-        await db.table("call_logs").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("call_logs").insert(row).execute()
+    await db.table("call_logs").insert(row).execute()
     if call_session_id:
         await finalize_call_session(
             call_session_id=call_session_id,
@@ -601,13 +558,7 @@ async def create_call_session(
     })
     if metadata is not None:
         row["metadata"] = json.dumps(metadata)
-    try:
-        await db.table("call_sessions").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("call_sessions").insert(row).execute()
+    await db.table("call_sessions").insert(row).execute()
     return session_id
 
 async def update_call_session(
@@ -673,70 +624,39 @@ async def save_transcript(room_name: str, speaker: str, message: str) -> None:
         "message": message,
         "created_at": _now(),
     })
-    try:
-        await db.table("call_transcripts").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("call_transcripts").insert(row).execute()
+    await db.table("call_transcripts").insert(row).execute()
 
 async def get_recent_transcripts(limit: int = 120, room_name: Optional[str] = None) -> list:
     db = await _adb()
     query = db.table("call_transcripts").select("*").order("created_at", desc=True).limit(limit)
     if room_name:
         query = query.eq("room_name", room_name)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def get_all_calls(page: int = 1, limit: int = 20) -> list:
     db = await _adb()
     offset = (page - 1) * limit
     query = db.table("call_logs").select("*").order("timestamp", desc=True).range(offset, offset + limit - 1)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def get_calls_by_phone(phone: str) -> list:
     db = await _adb()
     query = db.table("call_logs").select("*").eq("phone_number", phone).order("timestamp", desc=True)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def update_call_notes(call_id: str, notes: str) -> bool:
     db = await _adb()
     query = db.table("call_logs").update({"notes": notes}).eq("id", call_id)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return len(result.data or []) > 0
 
 async def get_contacts() -> list:
     db = await _adb()
     query = db.table("call_logs").select("*").order("timestamp", desc=True)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     rows = result.data or []
     contacts: dict = {}
     for row in rows:
@@ -829,23 +749,21 @@ async def create_campaign(
 async def get_all_campaigns() -> list:
     db = await _adb()
     query = db.table("campaigns").select("*").order("created_at", desc=True)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
+
+async def get_all_campaigns_unscoped() -> list:
+    db = await _adb()
+    try:
+        result = await db.table("campaigns").select("*").execute()
+        return result.data or []
+    except Exception:
+        return []
 
 async def get_campaign(campaign_id: str) -> Optional[dict]:
     db = await _adb()
     query = db.table("campaigns").select("*").eq("id", campaign_id)
-    try:
-        result = await _tenant_query(query).maybe_single().execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.maybe_single().execute()
+    result = await _tenant_query(query).maybe_single().execute()
     return result.data if result and getattr(result, "data", None) else None
 
 async def get_campaign_for_worker(campaign_id: str) -> Optional[dict]:
@@ -860,12 +778,7 @@ async def get_campaign_for_worker(campaign_id: str) -> Optional[dict]:
 async def update_campaign_status(campaign_id: str, status: str) -> bool:
     db = await _adb()
     query = db.table("campaigns").update({"status": status}).eq("id", campaign_id)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return len(result.data or []) > 0
 
 async def update_campaign_run_stats(campaign_id: str, dispatched: int, failed: int, status: str = "completed") -> None:
@@ -874,22 +787,12 @@ async def update_campaign_run_stats(campaign_id: str, dispatched: int, failed: i
         "last_run_at": _now(),
         "total_dispatched": dispatched, "total_failed": failed, "status": status,
     }).eq("id", campaign_id)
-    try:
-        await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        await query.execute()
+    await _tenant_query(query).execute()
 
 async def delete_campaign(campaign_id: str) -> bool:
     db = await _adb()
     query = db.table("campaigns").delete().eq("id", campaign_id)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return len(result.data or []) > 0
 
 # ── Contact Memory ────────────────────────────────────────────────────────────
@@ -900,78 +803,41 @@ async def add_contact_memory(phone: str, insight: str) -> None:
         "id": str(uuid.uuid4()), "phone_number": phone,
         "insight": insight[:1000], "created_at": _now(),
     })
-    try:
-        await db.table("contact_memory").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("contact_memory").insert(row).execute()
+    await db.table("contact_memory").insert(row).execute()
 
 async def get_contact_memory(phone: str) -> list:
     db = await _adb()
     query = db.table("contact_memory").select("insight, created_at").eq("phone_number", phone).order("created_at", desc=True).limit(20)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def compress_contact_memory(phone: str, compressed: str) -> None:
     db = await _adb()
-    try:
-        await _tenant_query(db.table("contact_memory").delete()).eq("phone_number", phone).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        await db.table("contact_memory").delete().eq("phone_number", phone).execute()
+    await _tenant_query(db.table("contact_memory").delete()).eq("phone_number", phone).execute()
     row = _with_tenant({
         "id": str(uuid.uuid4()), "phone_number": phone,
         "insight": compressed[:2000], "created_at": _now(),
     })
-    try:
-        await db.table("contact_memory").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("contact_memory").insert(row).execute()
+    await db.table("contact_memory").insert(row).execute()
 
 # ── Agent Profiles ────────────────────────────────────────────────────────────
 
 async def get_all_agent_profiles() -> list:
     db = await _adb()
     query = db.table("agent_profiles").select("*").order("created_at")
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await db.table("agent_profiles").select("*").order("created_at").execute()
+    result = await _tenant_query(query).execute()
     return result.data or []
 
 async def get_agent_profile(profile_id: str) -> Optional[dict]:
     db = await _adb()
     query = db.table("agent_profiles").select("*").eq("id", profile_id)
-    try:
-        result = await _tenant_query(query).maybe_single().execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await db.table("agent_profiles").select("*").eq("id", profile_id).maybe_single().execute()
+    result = await _tenant_query(query).maybe_single().execute()
     return result.data if result and getattr(result, "data", None) else None
 
 async def get_default_agent_profile() -> Optional[dict]:
     db = await _adb()
     query = db.table("agent_profiles").select("*").eq("is_default", 1).limit(1)
-    try:
-        result = await _tenant_query(query).maybe_single().execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await db.table("agent_profiles").select("*").eq("is_default", 1).limit(1).maybe_single().execute()
+    result = await _tenant_query(query).maybe_single().execute()
     return result.data if result and getattr(result, "data", None) else None
 
 async def create_agent_profile(
@@ -981,58 +847,31 @@ async def create_agent_profile(
     profile_id = str(uuid.uuid4())
     db = await _adb()
     if is_default:
-        try:
-            await _tenant_query(db.table("agent_profiles").update({"is_default": 0})).neq("id", "placeholder").execute()
-        except Exception as exc:
-            if not _schema_missing(exc):
-                raise
-            await db.table("agent_profiles").update({"is_default": 0}).neq("id", "placeholder").execute()
+        await _tenant_query(db.table("agent_profiles").update({"is_default": 0})).neq("id", "placeholder").execute()
     row = _with_tenant({
         "id": profile_id, "name": name, "voice": voice, "model": model,
         "system_prompt": system_prompt, "enabled_tools": enabled_tools,
         "is_default": 1 if is_default else 0, "created_at": _now(),
     })
-    try:
-        await db.table("agent_profiles").insert(row).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        row.pop("tenant_id", None)
-        await db.table("agent_profiles").insert(row).execute()
+    await db.table("agent_profiles").insert(row).execute()
     return profile_id
 
 async def update_agent_profile(profile_id: str, updates: dict) -> bool:
     db = await _adb()
     query = db.table("agent_profiles").update(updates).eq("id", profile_id)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return len(result.data or []) > 0
 
 async def delete_agent_profile(profile_id: str) -> bool:
     db = await _adb()
     query = db.table("agent_profiles").delete().eq("id", profile_id)
-    try:
-        result = await _tenant_query(query).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        result = await query.execute()
+    result = await _tenant_query(query).execute()
     return len(result.data or []) > 0
 
 async def set_default_agent_profile(profile_id: str) -> None:
     db = await _adb()
-    try:
-        await _tenant_query(db.table("agent_profiles").update({"is_default": 0})).neq("id", "placeholder").execute()
-        await _tenant_query(db.table("agent_profiles").update({"is_default": 1})).eq("id", profile_id).execute()
-    except Exception as exc:
-        if not _schema_missing(exc):
-            raise
-        await db.table("agent_profiles").update({"is_default": 0}).neq("id", "placeholder").execute()
-        await db.table("agent_profiles").update({"is_default": 1}).eq("id", profile_id).execute()
+    await _tenant_query(db.table("agent_profiles").update({"is_default": 0})).neq("id", "placeholder").execute()
+    await _tenant_query(db.table("agent_profiles").update({"is_default": 1})).eq("id", profile_id).execute()
 
 # ── Multi-Tenant Management Helpers ──
 

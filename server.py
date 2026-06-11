@@ -40,7 +40,7 @@ from db import (
     _adb,
     DEFAULT_TENANT_ID, SENSITIVE_KEYS, add_wallet_credits, audit_log, cancel_appointment, clear_errors,
     create_campaign, create_tenant, deduct_wallet_credits, delete_campaign,
-    get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
+    get_all_appointments, get_all_calls, get_all_campaigns, get_all_campaigns_unscoped, get_all_settings,
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
     delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign, get_default_agent_profile,
     get_campaign_for_worker, create_call_session, update_call_session,
@@ -1525,123 +1525,123 @@ async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> Non
         return
     _running_campaigns.add(campaign_id)
     campaign_probe = await get_campaign_for_worker(campaign_id)
+    tokens = None
     if campaign_probe and campaign_probe.get("tenant_id"):
-        set_request_context(campaign_probe.get("tenant_id"), get_current_user_email(), "TENANT_ADMIN")
+        tokens = set_request_context(campaign_probe.get("tenant_id"), get_current_user_email(), "TENANT_ADMIN")
     try:
-        await require_active_tenant("campaign execution")
-    except PermissionError as exc:
-        await log_error("server", "Campaign run blocked", f"campaign_id={campaign_id}; reason={exc}", "warning")
-        await update_campaign_run_stats(campaign_id, 0, 0, "failed")
-        _running_campaigns.discard(campaign_id)
-        return
-    campaign = await get_campaign(campaign_id)
-    if not campaign:
-        _running_campaigns.discard(campaign_id)
-        return
-    contacts = json.loads(campaign.get("contacts_json") or "[]")
-    if not contacts:
-        await update_campaign_run_stats(campaign_id, 0, 0, "failed")
-        await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=no_contacts", "error")
-        _running_campaigns.discard(campaign_id)
-        return
-    if campaign.get("status") in ("paused", "completed") and trigger_source != "manual":
-        await log_error("server", "Campaign scheduled run skipped", f"campaign_id={campaign_id}; status={campaign.get('status')}", "info")
-        _running_campaigns.discard(campaign_id)
-        return
-    await update_campaign_status(campaign_id, "running")
-    await log_error("server", "Campaign run started", f"campaign_id={campaign_id}; trigger={trigger_source}; total={len(contacts)}", "info")
-    delay   = int(campaign.get("call_delay_seconds") or 3)
-    prompt  = campaign.get("system_prompt")
-    agent_profile_id = campaign.get("agent_profile_id")
-    profile = None
-    if agent_profile_id:
-        profile = await get_agent_profile(agent_profile_id)
-        if not profile:
-            await log_error("server", "Campaign agent profile missing; using default fallback", f"campaign_id={campaign_id}; profile_id={agent_profile_id}", "warning")
-
-    url    = await eff("LIVEKIT_URL")
-    key    = await eff("LIVEKIT_API_KEY")
-    secret = await eff("LIVEKIT_API_SECRET")
-    if not (url and key and secret):
-        logger.error("Campaign %s: LiveKit not configured", campaign_id)
-        await update_campaign_run_stats(campaign_id, 0, len(contacts), "failed")
-        await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=livekit_not_configured", "error")
-        _running_campaigns.discard(campaign_id)
-        return
-
-    from livekit import api as lk_api_module
-    session = livekit_client_session()
-
-    campaign_pricing = await get_platform_pricing()
-    ok_count = fail_count = skipped_count = 0
-    final_status = "failed"
-    try:
-        lk = lk_api_module.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
-        for i, contact in enumerate(contacts):
-            phone = contact.get("phone", "")
-            if not phone.startswith("+"):
-                skipped_count += 1
-                fail_count += 1
-                await log_error("server", "Campaign contact skipped", f"campaign_id={campaign_id}; phone={phone or 'missing'}; reason=invalid_phone", "warning")
-                continue
-            # Per-contact wallet check (stop campaign if balance depleted)
-            if campaign_pricing["price_per_call_attempt"] > 0:
-                try:
-                    wallet_tenant = await get_tenant(get_current_tenant_id())
-                    if wallet_tenant and float(wallet_tenant.get("wallet_balance") or 0) <= 0:
-                        await log_error("server", "Campaign halted — wallet depleted", f"campaign_id={campaign_id}; stopped_at={i}/{len(contacts)}", "warning")
-                        break
-                except Exception:
-                    pass
-            room_name = f"camp-{campaign_id[:8]}-{phone.replace('+','')}-{random.randint(100,999)}"
-            success, reason = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
-            if success:
-                ok_count += 1
-                # Deduct call attempt fee (non-blocking)
-                if campaign_pricing["price_per_call_attempt"] > 0:
-                    asyncio.create_task(
-                        deduct_wallet_for_event(
-                            get_current_tenant_id(), "campaign_call_attempt",
-                            campaign_pricing["price_per_call_attempt"], get_current_user_email()
-                        )
-                    )
-            else:
-                fail_count += 1
-                await log_error("server", "Campaign contact failed", f"campaign_id={campaign_id}; phone={phone}; reason={reason}", "error")
-            if i < len(contacts) - 1:
-                await asyncio.sleep(delay)
-        final_status = "completed" if fail_count == 0 else ("partial" if ok_count else "failed")
-        await lk.aclose()
-    except Exception as exc:
-        logger.error("Campaign run error: %s", exc)
-        final_status = "partial" if ok_count else "failed"
-        await log_error("server", "Campaign run crashed", f"campaign_id={campaign_id}; error={exc}", "error")
-    finally:
         try:
-            await session.close()
-        except Exception:
-            pass
+            await require_active_tenant("campaign execution")
+        except PermissionError as exc:
+            await log_error("server", "Campaign run blocked", f"campaign_id={campaign_id}; reason={exc}", "warning")
+            await update_campaign_run_stats(campaign_id, 0, 0, "failed")
+            return
+        campaign = await get_campaign(campaign_id)
+        if not campaign:
+            return
+        contacts = json.loads(campaign.get("contacts_json") or "[]")
+        if not contacts:
+            await update_campaign_run_stats(campaign_id, 0, 0, "failed")
+            await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=no_contacts", "error")
+            return
+        if campaign.get("status") in ("paused", "completed") and trigger_source != "manual":
+            await log_error("server", "Campaign scheduled run skipped", f"campaign_id={campaign_id}; status={campaign.get('status')}", "info")
+            return
+        await update_campaign_status(campaign_id, "running")
+        await log_error("server", "Campaign run started", f"campaign_id={campaign_id}; trigger={trigger_source}; total={len(contacts)}", "info")
+        delay   = int(campaign.get("call_delay_seconds") or 3)
+        prompt  = campaign.get("system_prompt")
+        agent_profile_id = campaign.get("agent_profile_id")
+        profile = None
+        if agent_profile_id:
+            profile = await get_agent_profile(agent_profile_id)
+            if not profile:
+                await log_error("server", "Campaign agent profile missing; using default fallback", f"campaign_id={campaign_id}; profile_id={agent_profile_id}", "warning")
 
-    persisted_status = "active" if campaign.get("schedule_type") in ("daily", "weekdays") and campaign.get("status") != "paused" else final_status
-    await update_campaign_run_stats(campaign_id, ok_count, fail_count, persisted_status)
-    await log_error(
-        "server",
-        "Campaign run completed",
-        (
-            f"campaign_id={campaign_id}; trigger={trigger_source}; status={final_status}; "
-            f"persisted_status={persisted_status}; dispatched={ok_count}; failed={fail_count}; skipped={skipped_count}"
-        ),
-        "warning" if fail_count else "info",
-    )
-    _running_campaigns.discard(campaign_id)
-    logger.info("Campaign %s done - %d dispatched, %d failed, %d skipped, status=%s", campaign_id, ok_count, fail_count, skipped_count, final_status)
+        url    = await eff("LIVEKIT_URL")
+        key    = await eff("LIVEKIT_API_KEY")
+        secret = await eff("LIVEKIT_API_SECRET")
+        if not (url and key and secret):
+            logger.error("Campaign %s: LiveKit not configured", campaign_id)
+            await update_campaign_run_stats(campaign_id, 0, len(contacts), "failed")
+            await log_error("server", "Campaign run failed", f"campaign_id={campaign_id}; reason=livekit_not_configured", "error")
+            return
+
+        from livekit import api as lk_api_module
+        session = livekit_client_session()
+
+        campaign_pricing = await get_platform_pricing()
+        ok_count = fail_count = skipped_count = 0
+        final_status = "failed"
+        try:
+            lk = lk_api_module.LiveKitAPI(url=url, api_key=key, api_secret=secret, session=session)
+            for i, contact in enumerate(contacts):
+                phone = contact.get("phone", "")
+                if not phone.startswith("+"):
+                    skipped_count += 1
+                    fail_count += 1
+                    await log_error("server", "Campaign contact skipped", f"campaign_id={campaign_id}; phone={phone or 'missing'}; reason=invalid_phone", "warning")
+                    continue
+                # Per-contact wallet check (stop campaign if balance depleted)
+                if campaign_pricing["price_per_call_attempt"] > 0:
+                    try:
+                        wallet_tenant = await get_tenant(get_current_tenant_id())
+                        if wallet_tenant and float(wallet_tenant.get("wallet_balance") or 0) <= 0:
+                            await log_error("server", "Campaign halted — wallet depleted", f"campaign_id={campaign_id}; stopped_at={i}/{len(contacts)}", "warning")
+                            break
+                    except Exception:
+                        pass
+                room_name = f"camp-{campaign_id[:8]}-{phone.replace('+','')}-{random.randint(100,999)}"
+                success, reason = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
+                if success:
+                    ok_count += 1
+                    # Deduct call attempt fee (non-blocking)
+                    if campaign_pricing["price_per_call_attempt"] > 0:
+                        asyncio.create_task(
+                            deduct_wallet_for_event(
+                                get_current_tenant_id(), "campaign_call_attempt",
+                                campaign_pricing["price_per_call_attempt"], get_current_user_email()
+                            )
+                        )
+                else:
+                    fail_count += 1
+                    await log_error("server", "Campaign contact failed", f"campaign_id={campaign_id}; phone={phone}; reason={reason}", "error")
+                if i < len(contacts) - 1:
+                    await asyncio.sleep(delay)
+            final_status = "completed" if fail_count == 0 else ("partial" if ok_count else "failed")
+            await lk.aclose()
+        except Exception as exc:
+            logger.error("Campaign run error: %s", exc)
+            final_status = "partial" if ok_count else "failed"
+            await log_error("server", "Campaign run crashed", f"campaign_id={campaign_id}; error={exc}", "error")
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                pass
+
+        persisted_status = "active" if campaign.get("schedule_type") in ("daily", "weekdays") and campaign.get("status") != "paused" else final_status
+        await update_campaign_run_stats(campaign_id, ok_count, fail_count, persisted_status)
+        await log_error(
+            "server",
+            "Campaign run completed",
+            (
+                f"campaign_id={campaign_id}; trigger={trigger_source}; status={final_status}; "
+                f"persisted_status={persisted_status}; dispatched={ok_count}; failed={fail_count}; skipped={skipped_count}"
+            ),
+            "warning" if fail_count else "info",
+        )
+        logger.info("Campaign %s done - %d dispatched, %d failed, %d skipped, status=%s", campaign_id, ok_count, fail_count, skipped_count, final_status)
+    finally:
+        _running_campaigns.discard(campaign_id)
+        if tokens:
+            reset_request_context(tokens)
 
 
 async def _reschedule_all_campaigns() -> None:
     if not _scheduler:
         return
     try:
-        campaigns = await get_all_campaigns()
+        campaigns = await get_all_campaigns_unscoped()
         for c in campaigns:
             if c.get("status") == "active" and c.get("schedule_type") in ("daily", "weekdays"):
                 _schedule_campaign(c["id"], c["schedule_type"], c.get("schedule_time", "09:00"))

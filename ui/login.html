@@ -260,6 +260,20 @@
         </button>
       </form>
 
+      <form id="update-password-form" onsubmit="handleUpdatePassword(event)" style="display: none; flex-direction: column;">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label for="new-password-input">New Password</label>
+          <input id="new-password-input" type="password" autocomplete="new-password" required placeholder="••••••••" minlength="6" />
+        </div>
+        <div class="form-group" style="margin-bottom: 20px;">
+          <label for="confirm-password-input">Confirm New Password</label>
+          <input id="confirm-password-input" type="password" autocomplete="new-password" required placeholder="••••••••" minlength="6" />
+        </div>
+        <button id="save-pwd-btn" class="btn btn-primary" type="submit">
+          <span>Save Password & Continue</span>
+        </button>
+      </form>
+
       <div class="divider">or continue with</div>
 
       <div class="oauth-row">
@@ -286,6 +300,8 @@
 
   <script>
     let supabaseClient = null;
+    let isInviteOrRecovery = false;
+    let postPasswordRedirectUrl = "/ui/index.html";
 
     function setCookie(name, value, seconds) {
       let expires = "";
@@ -376,12 +392,22 @@
         }
 
         const context = await ctxRes.json();
+        let targetUrl = "/ui/index.html";
         if (context.role === "SUPER_ADMIN") {
-          window.location.replace("/ui/admin.html");
+          targetUrl = "/ui/admin.html";
         } else if (context.role === "TENANT_ADMIN" || context.role === "TENANT_USER") {
-          window.location.replace("/ui/index.html");
+          targetUrl = "/ui/index.html";
         } else {
           throw new Error("Access Denied: Invalid role permissions.");
+        }
+
+        if (isInviteOrRecovery) {
+          postPasswordRedirectUrl = targetUrl;
+          showPasswordUpdateUI();
+          setSubmitting(false);
+          isHandlingSession = false;
+        } else {
+          window.location.replace(targetUrl);
         }
       } catch (err) {
         showError(err.message);
@@ -394,6 +420,69 @@
         setCookie("sb-refresh-token", "", -1);
         setSubmitting(false);
         isHandlingSession = false;
+      }
+    }
+
+    function showPasswordUpdateUI() {
+      const headerTitle = document.querySelector(".brand-header h1");
+      if (headerTitle) headerTitle.textContent = "Set Your Password";
+      const headerSub = document.querySelector(".brand-header p");
+      if (headerSub) headerSub.textContent = "Create a secure password for your account";
+
+      const loginForm = document.getElementById("login-form");
+      if (loginForm) loginForm.style.display = "none";
+      const divider = document.querySelector(".divider");
+      if (divider) divider.style.display = "none";
+      const oauthRow = document.querySelector(".oauth-row");
+      if (oauthRow) oauthRow.style.display = "none";
+      const authFooter = document.querySelector(".auth-footer");
+      if (authFooter) authFooter.style.display = "none";
+
+      const updateForm = document.getElementById("update-password-form");
+      if (updateForm) updateForm.style.display = "flex";
+    }
+
+    async function handleUpdatePassword(e) {
+      e.preventDefault();
+      showError(null);
+      if (!supabaseClient) {
+        showError("Authentication client not initialized.");
+        return;
+      }
+
+      const newPassword = document.getElementById("new-password-input").value;
+      const confirmPassword = document.getElementById("confirm-password-input").value;
+
+      if (newPassword !== confirmPassword) {
+        showError("Passwords do not match.");
+        return;
+      }
+
+      const saveBtn = document.getElementById("save-pwd-btn");
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = `<span class="spinner"></span> <span>Saving...</span>`;
+      }
+
+      try {
+        const { error } = await supabaseClient.auth.updateUser({ password: newPassword });
+        if (error) {
+          showError(error.message);
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = `<span>Save Password & Continue</span>`;
+          }
+          return;
+        }
+
+        isInviteOrRecovery = false;
+        window.location.replace(postPasswordRedirectUrl);
+      } catch (err) {
+        showError("An unexpected error occurred saving your password.");
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = `<span>Save Password & Continue</span>`;
+        }
       }
     }
 
@@ -467,6 +556,9 @@
       const hashParams = new URLSearchParams(window.location.hash.substring(1));
       if (hashParams.has("error_description")) {
         showError(hashParams.get("error_description").replace(/\+/g, " "));
+      }
+      if (hashParams.get("type") === "invite" || hashParams.get("type") === "recovery") {
+        isInviteOrRecovery = true;
       }
       initSupabase();
     });

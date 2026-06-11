@@ -27,7 +27,7 @@ except ImportError:
     _HAS_ROOM_OPTIONS = False
 from livekit.plugins import noise_cancellation
 
-from db import init_db, log_error, get_enabled_tools, save_transcript
+from db import init_db, log_error, get_enabled_tools, save_transcript, set_request_context
 from prompts import build_prompt
 from tools import AppointmentTools, DEFAULT_TOOL_NAMES, MANDATORY_BOOKING_TOOLS
 
@@ -134,7 +134,7 @@ def load_db_settings_to_env() -> None:
     try:
         from supabase import create_client
         client = create_client(url, key)
-        result = client.table("settings").select("key, value").execute()
+        result = client.table("settings").select("key, value").eq("tenant_id", "default").execute()
         for row in (result.data or []):
             if row.get("value"):
                 os.environ[row["key"]] = row["value"]
@@ -269,9 +269,11 @@ async def entrypoint(ctx: agents.JobContext):
     call_session_id: Optional[str] = None
     direction = "outbound"
 
+    tenant_id: Optional[str] = None
     raw_meta = ctx.job.metadata or ""
     try:
         meta = json.loads(raw_meta) if raw_meta else {}
+        tenant_id      = meta.get("tenant_id")
         phone_number   = meta.get("phone_number")
         lead_name      = meta.get("lead_name", "there")
         business_name  = meta.get("business_name", "our company")
@@ -290,6 +292,8 @@ async def entrypoint(ctx: agents.JobContext):
         direction = meta.get("direction") or "outbound"
     except Exception as exc:
         await _log_exception("Metadata parse error", exc, "warning")
+
+    set_request_context(tenant_id=tenant_id, role="TENANT_ADMIN")
 
     # ── Apply agent profile overrides (Rule 10) ──────────────────────────────
     if voice_override:
