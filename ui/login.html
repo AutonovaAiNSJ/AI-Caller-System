@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>OutboundAI - Portal Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    :root {
+      --bg: #F9FAFB;
+      --sidebar: #ffffff;
+      --card: #ffffff;
+      --border: #E5E7EB;
+      --accent: #5B5BD6;
+      --danger: #ef4444;
+      --text: #111827;
+      --text2: #374151;
+      --muted: #6B7280;
+      --sans: 'Inter', 'Manrope', sans-serif;
+      --shadow: 0 1px 2px 0 rgba(0,0,0,0.05), 0 4px 12px 0 rgba(0,0,0,0.03);
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      line-height: 1.5;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .auth-container {
+      width: min(420px, 100%);
+    }
+    .auth-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+    }
+    .brand-header {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .brand-logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, var(--accent), #8b8bf4);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 4px 12px rgba(91, 91, 214, 0.15);
+      margin-bottom: 14px;
+    }
+    .brand-logo img {
+      width: 26px;
+      height: 26px;
+      object-fit: contain;
+    }
+    .brand-header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      margin-bottom: 4px;
+    }
+    .brand-header p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      margin-bottom: 16px;
+    }
+    label {
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    input {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: var(--sans);
+      width: 100%;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.12s ease;
+      width: 100%;
+    }
+    .btn:active {
+      transform: scale(0.98);
+    }
+    .btn:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-primary {
+      background: #111827;
+      color: #fff;
+      border-color: #111827;
+      margin-top: 4px;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #1f2937;
+      border-color: #1f2937;
+    }
+    .divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+      margin: 18px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid var(--border);
+    }
+    .divider:not(:empty)::before {
+      margin-right: 1em;
+    }
+    .divider:not(:empty)::after {
+      margin-left: 1em;
+    }
+    .oauth-row {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    .btn-oauth {
+      background: #fff;
+      border: 1px solid var(--border);
+      color: var(--text2);
+      flex: 1;
+      max-width: 80px;
+      height: 40px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-oauth:hover:not(:disabled) {
+      background: #f9fafb;
+      border-color: #c4c5c7;
+    }
+    .btn-oauth svg {
+      width: 18px;
+      height: 18px;
+    }
+    .error-banner {
+      background: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.15);
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: var(--danger);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 16px;
+      display: none;
+      text-align: center;
+    }
+    .error-banner.show {
+      display: block;
+    }
+    .auth-footer {
+      text-align: center;
+      margin-top: 22px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .auth-footer a {
+      color: var(--accent);
+      font-weight: 500;
+      text-decoration: none;
+    }
+    .auth-footer a:hover {
+      text-decoration: underline;
+    }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="brand-header">
+        <div class="brand-logo">
+          <img src="/ui/ai_voice_logo.png" alt="Logo" onerror="this.style.display='none'" />
+        </div>
+        <h1>Welcome Back</h1>
+        <p>Access your OutboundAI workspace</p>
+      </div>
+
+      <div id="error-box" class="error-banner"></div>
+
+      <form id="login-form" onsubmit="handleEmailLogin(event)" style="display: flex; flex-direction: column;">
+        <div class="form-group">
+          <label for="email-input">Email Address</label>
+          <input id="email-input" type="email" autocomplete="username" required placeholder="name@company.com" />
+        </div>
+        <div class="form-group">
+          <label for="password-input">Password</label>
+          <input id="password-input" type="password" autocomplete="current-password" required placeholder="••••••••" />
+        </div>
+        <button id="submit-btn" class="btn btn-primary" type="submit">
+          <span>Sign In</span>
+        </button>
+      </form>
+
+      <div class="divider">or continue with</div>
+
+      <div class="oauth-row">
+        <button class="btn btn-oauth" type="button" onclick="handleOAuthLogin('google')" title="Google Workspace">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+        </button>
+        <button class="btn btn-oauth" type="button" onclick="handleOAuthLogin('github')" title="GitHub Account">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.167 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.137 20.164 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="auth-footer">
+        Don't have an account? <a href="signup.html">Create Account</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let supabaseClient = null;
+
+    function setCookie(name, value, seconds) {
+      let expires = "";
+      if (seconds) {
+        const date = new Date();
+        date.setTime(date.getTime() + (seconds * 1000));
+        expires = "; expires=" + date.toUTCString();
+      }
+      document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
+    }
+
+    function showError(msg) {
+      const box = document.getElementById("error-box");
+      if (box) {
+        if (msg) {
+          box.textContent = msg;
+          box.classList.add("show");
+        } else {
+          box.classList.remove("show");
+          box.textContent = "";
+        }
+      }
+    }
+
+    function setSubmitting(submitting) {
+      const btn = document.getElementById("submit-btn");
+      if (btn) {
+        if (submitting) {
+          btn.disabled = true;
+          btn.innerHTML = `<span class="spinner"></span> <span>Signing In...</span>`;
+        } else {
+          btn.disabled = false;
+          btn.innerHTML = `<span>Sign In</span>`;
+        }
+      }
+    }
+
+    async function initSupabase() {
+      try {
+        const res = await fetch("/api/auth/config");
+        if (!res.ok) throw new Error("Could not fetch auth configuration");
+        const config = await res.json();
+        
+        if (!config.supabase_url || !config.supabase_anon_key) {
+          throw new Error("Supabase URL or Anon Key missing from server configuration");
+        }
+        
+        supabaseClient = supabase.createClient(config.supabase_url, config.supabase_anon_key);
+        setupAuthListeners();
+      } catch (err) {
+        showError("Initialization failed: " + err.message);
+      }
+    }
+
+    let isHandlingSession = false;
+    async function handleAuthSession(session) {
+      if (isHandlingSession) return;
+      isHandlingSession = true;
+      showError(null);
+      setSubmitting(true);
+
+      // Save tokens in cookies immediately
+      setCookie("sb-access-token", session.access_token, session.expires_in);
+      setCookie("sb-refresh-token", session.refresh_token, 30 * 86400);
+
+      try {
+        // Step 1: Ensure user is registered/resolved in backend public.users DB
+        const regRes = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`
+          }
+        });
+        if (!regRes.ok) {
+          const regErr = await regRes.json().catch(() => ({}));
+          throw new Error(regErr.detail || "Automatic profile resolution failed.");
+        }
+
+        // Step 2: Fetch authorization context
+        const ctxRes = await fetch("/api/auth/context", {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`
+          }
+        });
+        if (!ctxRes.ok) {
+          const ctxErr = await ctxRes.json().catch(() => ({}));
+          throw new Error(ctxErr.detail || "Failed to load authorization details.");
+        }
+
+        const context = await ctxRes.json();
+        if (context.role === "SUPER_ADMIN") {
+          window.location.replace("/ui/admin.html");
+        } else if (context.role === "TENANT_ADMIN" || context.role === "TENANT_USER") {
+          window.location.replace("/ui/index.html");
+        } else {
+          throw new Error("Access Denied: Invalid role permissions.");
+        }
+      } catch (err) {
+        showError(err.message);
+        if (supabaseClient) {
+          try {
+            await supabaseClient.auth.signOut();
+          } catch (_) {}
+        }
+        setCookie("sb-access-token", "", -1);
+        setCookie("sb-refresh-token", "", -1);
+        setSubmitting(false);
+        isHandlingSession = false;
+      }
+    }
+
+    function setupAuthListeners() {
+      // Check for current active session
+      supabaseClient.auth.getSession().then(({ data: { session } }) => {
+        if (session) {
+          handleAuthSession(session);
+        }
+      });
+
+      // Bind listener
+      supabaseClient.auth.onAuthStateChange((event, session) => {
+        if (session) {
+          handleAuthSession(session);
+        } else {
+          setCookie("sb-access-token", "", -1);
+          setCookie("sb-refresh-token", "", -1);
+        }
+      });
+    }
+
+    async function handleEmailLogin(e) {
+      e.preventDefault();
+      showError(null);
+      if (!supabaseClient) {
+        showError("Authentication client not initialized.");
+        return;
+      }
+
+      const email = document.getElementById("email-input").value.trim();
+      const password = document.getElementById("password-input").value;
+
+      setSubmitting(true);
+      try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) {
+          showError(error.message);
+          setSubmitting(false);
+        }
+      } catch (err) {
+        showError("An unexpected error occurred during sign in.");
+        setSubmitting(false);
+      }
+    }
+
+    async function handleOAuthLogin(provider) {
+      showError(null);
+      if (!supabaseClient) {
+        showError("Authentication client not initialized.");
+        return;
+      }
+
+      try {
+        const { error } = await supabaseClient.auth.signInWithOAuth({
+          provider: provider,
+          options: {
+            redirectTo: window.location.origin + '/ui/login.html'
+          }
+        });
+        if (error) {
+          showError(error.message);
+        }
+      } catch (err) {
+        showError("An unexpected error occurred initiating OAuth login.");
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      // Check for URL hash parameters if auth redirected back with an error
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      if (hashParams.has("error_description")) {
+        showError(hashParams.get("error_description").replace(/\+/g, " "));
+      }
+      initSupabase();
+    });
+  </script>
+</body>
+</html>

@@ -297,6 +297,18 @@ async def entrypoint(ctx: agents.JobContext):
     if model_override:
         os.environ["GEMINI_MODEL"] = model_override
 
+    # ── Apply per-tenant credential injection (BYOK routing via dispatch metadata) ──
+    # server.py resolves the effective credential via eff() (BYOK > MANAGED fallback)
+    # and injects into metadata. Apply here before _build_session() reads os.environ.
+    if meta.get("google_api_key"):
+        os.environ["GOOGLE_API_KEY"] = meta["google_api_key"]
+    if meta.get("gemini_model") and not model_override:
+        os.environ["GEMINI_MODEL"] = meta["gemini_model"]
+    if meta.get("gemini_voice") and not voice_override:
+        os.environ["GEMINI_TTS_VOICE"] = meta["gemini_voice"]
+    if meta.get("outbound_trunk_id"):
+        os.environ["OUTBOUND_TRUNK_ID"] = meta["outbound_trunk_id"]
+
     # ── Resolve enabled tools ────────────────────────────────────────────────
     # enabled_tools: list = []
     # if tools_override:

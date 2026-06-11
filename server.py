@@ -1,11 +1,12 @@
 import os
+from dotenv import load_dotenv
+load_dotenv(".env", override=False)  # VPS env vars always win — .env only for local dev
 
 """FastAPI backend for the OutboundAI dashboard."""
 import uvicorn
 import asyncio
 import json
 import logging
-import os
 import random
 import secrets
 import ssl
@@ -15,10 +16,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request, File, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from livekit import api
@@ -38,17 +37,25 @@ port = int(os.getenv("PORT", 8000))
 
 
 from db import (
-    SENSITIVE_KEYS, cancel_appointment, clear_errors, create_campaign, delete_campaign,
+    _adb,
+    DEFAULT_TENANT_ID, SENSITIVE_KEYS, add_wallet_credits, audit_log, cancel_appointment, clear_errors,
+    create_campaign, create_tenant, deduct_wallet_credits, delete_campaign,
     get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
     get_all_agent_profiles, get_agent_profile, create_agent_profile, update_agent_profile,
     delete_agent_profile, set_default_agent_profile, get_calls_by_phone, get_campaign, get_default_agent_profile,
-    create_call_session, update_call_session,
+    get_campaign_for_worker, create_call_session, update_call_session,
     get_contacts, get_errors, get_logs, get_recent_transcripts, get_setting, get_stats, init_db, log_error,
-    save_settings, set_setting, update_call_notes, update_campaign_run_stats, update_campaign_status,
+    get_current_tenant_id, get_current_user_email, get_current_user_role, get_super_admin_summary, get_tenant,
+    get_tenant_api_keys, get_tenant_branding, list_tenants, require_active_tenant,
+    reset_request_context, save_settings, save_tenant_api_keys, set_request_context, set_setting,
+    update_call_notes, update_campaign_run_stats, update_campaign_status, update_tenant,
+    update_tenant_branding, update_tenant_status,
+    # Production SaaS additions
+    get_platform_pricing, deduct_wallet_for_event, invite_tenant_admin, update_user_profile,
 )
+from db import get_user_by_email
 from prompts import DEFAULT_SYSTEM_PROMPT
 
-load_dotenv(".env", override=False)  # VPS env vars always win — .env only for local dev
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server")
 
@@ -61,70 +68,218 @@ except ImportError:
     logger.warning("APScheduler not installed — campaign scheduling disabled")
 
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
+
+class ImpersonateRequest(BaseModel):
+    tenant_id: Optional[str] = None
+
+
+def _extract_access_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return request.cookies.get("sb-access-token", "").strip()
+
+
+async def _verify_supabase_token(token: str) -> Optional[dict]:
+    try:
+        db = await _adb()
+        res = await db.auth.get_user(token)
+        if res and res.user:
+            user = res.user
+            user_id = getattr(user, "id", None) or user.get("id")
+            email = getattr(user, "email", None) or user.get("email")
+            user_metadata = getattr(user, "user_metadata", {}) or user.get("user_metadata", {}) or {}
+            full_name = user_metadata.get("full_name") or user_metadata.get("name") or ""
+            return {
+                "id": str(user_id),
+                "email": email,
+                "full_name": full_name,
+            }
+    except Exception as exc:
+        logger.warning(f"Supabase token verification failed: {exc}")
+    return None
+
+
+async def _request_authenticated(request: Request) -> bool:
+    token = _extract_access_token(request)
+    if not token:
+        return False
+    user_info = await _verify_supabase_token(token)
+    if not user_info:
+        return False
+    user_record = await get_user_by_email(user_info.get("email"))
+    if not user_record or not user_record.get("is_active"):
+        return False
+    return user_record.get("role", "").strip().upper() == "SUPER_ADMIN"
+
+
+@app.get("/ui/admin.html", response_class=HTMLResponse)
+async def serve_admin_page(request: Request):
+    if get_current_user_role() != "SUPER_ADMIN":
+        raise HTTPException(403, "Super Admin access required")
+    html_path = Path(__file__).parent / "ui" / "admin.html"
+    if html_path.exists():
+        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+    raise HTTPException(404, "admin.html not found")
+
+
+@app.post("/api/super-admin/impersonate")
+async def api_super_admin_impersonate(req: ImpersonateRequest):
+    _require_super_admin()
+    response = JSONResponse({"status": "ok", "impersonated_tenant_id": req.tenant_id})
+    if req.tenant_id:
+        response.set_cookie(
+            key="impersonated_tenant_id",
+            value=req.tenant_id,
+            path="/",
+            samesite="lax",
+            max_age=86400,
+        )
+    else:
+        response.delete_cookie(key="impersonated_tenant_id", path="/")
+    return response
+
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 _running_campaigns: set[str] = set()
 _auth_warning_logged = False
 _active_calls: dict[str, dict] = {}
 
 
-def _is_local_request(request: Request) -> bool:
-    client_host = request.client.host if request.client else ""
-    host_header = (request.headers.get("host") or "").split(":", 1)[0].lower()
-    local_hosts = {"127.0.0.1", "::1", "localhost"}
-    return client_host in local_hosts and (not host_header or host_header in local_hosts)
+def _parse_email_list(raw: str) -> set[str]:
+    cleaned = raw.replace("\n", ",").replace(";", ",")
+    out = set()
+    for item in cleaned.split(","):
+        email = item.strip().lower().replace("mailto:", "")
+        if email.startswith("[") and "](" in email:
+            email = email[1:].split("](", 1)[0].strip().lower()
+        if "@" in email:
+            out.add(email)
+    return out
 
 
-def _extract_admin_token(request: Request) -> str:
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return auth.split(" ", 1)[1].strip()
-    return (
-        request.headers.get("x-admin-token")
-        or request.cookies.get("admin_token")
-        or ""
-    ).strip()
+def _super_admin_emails() -> set[str]:
+    return _parse_email_list(os.getenv("SUPER_ADMIN_EMAILS", ""))
 
 
-async def _admin_token() -> str:
-    env_token = os.getenv("ADMIN_TOKEN", "").strip()
-    if env_token:
-        return env_token
+# Removed legacy x-user-email, x-tenant-id and IP/Admin token bypass logic.
+
+
+def _require_super_admin() -> None:
+    if get_current_user_role() != "SUPER_ADMIN":
+        raise HTTPException(403, "Super Admin access required")
+
+
+async def _require_active(operation: str) -> None:
     try:
-        return (await get_setting("ADMIN_TOKEN", "") or "").strip()
-    except Exception:
-        return ""
+        await require_active_tenant(operation)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
 
-async def _request_authenticated(request: Request) -> bool:
-    configured = await _admin_token()
-    if not configured:
-        return _is_local_request(request)
-    supplied = _extract_admin_token(request)
-    return bool(supplied) and secrets.compare_digest(supplied, configured)
+async def _require_wallet_sufficient(operation: str) -> None:
+    """Gate for MANAGED tenants: raise 402 if wallet balance <= 0."""
+    try:
+        tenant = await get_tenant(get_current_tenant_id())
+        if not tenant or tenant.get("billing_mode") != "MANAGED":
+            return  # BYOK tenants: no wallet gate
+        balance = float(tenant.get("wallet_balance") or 0.0)
+        if balance <= 0:
+            raise HTTPException(
+                402,
+                f"Insufficient wallet balance for {operation}. "
+                "Please contact your administrator to top up your account.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"_require_wallet_sufficient check failed (non-fatal): {exc}")
+
+
+def _valid_e164(value: str) -> bool:
+    value = (value or "").strip()
+    return not value or (value.startswith("+") and value[1:].isdigit() and 8 <= len(value) <= 16)
+
+
+# Removed legacy _is_local_request check
 
 
 @app.middleware("http")
 async def admin_auth_middleware(request: Request, call_next):
-    global _auth_warning_logged
     path = request.url.path
-    if path == "/api/health":
+    if path in ("/api/health", "/ui/login.html", "/ui/signup.html", "/api/auth/config", "/api/auth/register"):
         return await call_next(request)
-    elif path == "/" or path.startswith("/api/") or path.startswith("/docs") or path.startswith("/redoc") or path.startswith("/openapi.json"):
-        configured = await _admin_token()
-        if not configured:
-            if not _auth_warning_logged:
-                logger.warning("Auth disabled because ADMIN_TOKEN is missing; localhost-only access is allowed")
-                _auth_warning_logged = True
-            if not _is_local_request(request):
-                return JSONResponse({"detail": "ADMIN_TOKEN is not configured; remote access is blocked"}, status_code=401)
-        elif path.startswith("/api/") and not await _request_authenticated(request):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    is_protected_page = path in ("/", "/ui/index.html", "/ui/admin.html")
+    is_protected_api = path.startswith("/api/")
+
+    if is_protected_page or is_protected_api:
+        token = _extract_access_token(request)
+        user_email = None
+        user_role = "TENANT_ADMIN"
+        tenant_id = DEFAULT_TENANT_ID
+        is_active = False
+
+        logger.info(f"[admin_auth_middleware] path={path} token_present={bool(token)}")
+        if token:
+            user_info = await _verify_supabase_token(token)
+            logger.info(f"[admin_auth_middleware] verified_user_info={user_info}")
+            if user_info:
+                user_email = user_info.get("email")
+                user_record = await get_user_by_email(user_email)
+                logger.info(f"[admin_auth_middleware] user_record={user_record}")
+                if user_record:
+                    is_active = bool(user_record.get("is_active"))
+                    user_role = user_record.get("role", "TENANT_USER").strip().upper()
+                    tenant_id = user_record.get("tenant_id") or DEFAULT_TENANT_ID
+
+                    logger.info(f"EMAIL={user_email}")
+                    logger.info(f"USER_RECORD={user_record}")
+                    logger.info(f"ROLE={user_role}")
+                    logger.info(f"TENANT={tenant_id}")
+                    logger.info(f"TENANT_ID={tenant_id}")
+                    logger.info(f"IS_ACTIVE={is_active}")
+
+                    if user_role == "SUPER_ADMIN":
+                        imp_tenant = request.cookies.get("impersonated_tenant_id", "").strip()
+                        if imp_tenant:
+                            tenant_id = imp_tenant
+                else:
+                    logger.info("[admin_auth_middleware] User record not found in database.")
+            else:
+                logger.info("[admin_auth_middleware] Token verification failed or email not found in token.")
+        else:
+            logger.info("[admin_auth_middleware] Token is missing from request headers and cookies.")
+
+        if not user_email or not is_active:
+            if is_protected_page:
+                return RedirectResponse(url="/ui/login.html", status_code=303)
+            else:
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+        if (path == "/ui/admin.html" or path.startswith("/api/super-admin/")) and user_role != "SUPER_ADMIN":
+            if is_protected_page:
+                return RedirectResponse(url="/ui/login.html", status_code=303)
+            else:
+                return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+        tokens = set_request_context(tenant_id, user_email, user_role)
+        try:
+            return await call_next(request)
+        finally:
+            reset_request_context(tokens)
+
     return await call_next(request)
 
 
 @app.on_event("startup")
 async def _startup():
     init_db()
+    from db import ensure_default_tenant
+    try:
+        await ensure_default_tenant()
+        logger.info("[startup] Default tenant verified/created successfully.")
+    except Exception as exc:
+        logger.error(f"[startup] Failed to verify/create default tenant: {exc}")
     if _scheduler:
         if not _scheduler.running:
             _scheduler.start()
@@ -161,9 +316,16 @@ def _normalize_phone_identity(identity: Optional[str]) -> str:
     return clean.strip()
 
 
-def _active_call_started(room_name: str, phone: str, lead_name: str = "there", status: str = "dispatching") -> None:
+def _active_call_started(
+    room_name: str,
+    phone: str,
+    lead_name: str = "there",
+    status: str = "dispatching",
+    tenant_id: Optional[str] = None,
+) -> None:
     now = time.time()
     _active_calls[room_name] = {
+        "tenant_id": tenant_id or get_current_tenant_id(),
         "room_name": room_name,
         "phone": phone,
         "lead_name": lead_name or "there",
@@ -262,9 +424,73 @@ class StatusRequest(BaseModel):
     status: str
 
 
-class AdminTokenChangeRequest(BaseModel):
-    current_token: str = ""
-    new_token: str
+# Removed AdminTokenChangeRequest
+
+
+class TenantRequest(BaseModel):
+    company_name: str
+    slug: Optional[str] = None
+    status: str = "TRIAL"
+    billing_mode: str = "MANAGED"
+    wallet_balance: float = 0
+    wallet_low_balance_threshold: float = 0
+    company_logo: Optional[str] = None
+    company_logo_url: Optional[str] = None
+    favicon: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    secondary_color: Optional[str] = None
+    support_email: Optional[str] = None
+    website_url: Optional[str] = None
+    admin_email: Optional[str] = None  # Tenant admin email — triggers auto-invite on creation
+
+
+class PricingRequest(BaseModel):
+    price_per_call_attempt: float = 0.0
+    price_per_appointment: float = 0.0
+
+
+class TenantUpdateRequest(BaseModel):
+    company_name: Optional[str] = None
+    slug: Optional[str] = None
+    status: Optional[str] = None
+    billing_mode: Optional[str] = None
+    wallet_balance: Optional[float] = None
+    wallet_low_balance_threshold: Optional[float] = None
+    company_logo: Optional[str] = None
+    company_logo_url: Optional[str] = None
+    favicon: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    secondary_color: Optional[str] = None
+    support_email: Optional[str] = None
+    website_url: Optional[str] = None
+
+
+class BrandingRequest(BaseModel):
+    company_name: Optional[str] = None
+    company_logo: Optional[str] = None
+    company_logo_url: Optional[str] = None
+    favicon: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    secondary_color: Optional[str] = None
+    support_email: Optional[str] = None
+    website_url: Optional[str] = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: str
+
+
+class WalletRequest(BaseModel):
+    amount: float
+    reason: str = ""
+
+
+class TenantApiKeysRequest(BaseModel):
+    mode: str = "BYOK"
+    keys: dict
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -279,8 +505,339 @@ async def serve_dashboard():
 
 # ── Call dispatch ─────────────────────────────────────────────────────────────
 
+@app.get("/api/auth/config")
+async def api_auth_config():
+    return {
+        "supabase_url": os.getenv("SUPABASE_URL", ""),
+        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", "")
+    }
+
+
+@app.post("/api/auth/register")
+async def api_auth_register(request: Request):
+    token = _extract_access_token(request)
+    if not token:
+        raise HTTPException(401, "No auth token provided")
+    user_info = await _verify_supabase_token(token)
+    if not user_info:
+        raise HTTPException(401, "Invalid auth token")
+    
+    logger.info(f"[api_auth_register] Registering/resolving user: {user_info['email']}")
+    from db import get_or_create_user
+    user_record = await get_or_create_user(
+        uuid_str=user_info["id"],
+        email=user_info["email"],
+        full_name=user_info["full_name"]
+    )
+    return user_record
+
+
+@app.get("/api/auth/context")
+async def api_auth_context(request: Request):
+    email = get_current_user_email()
+    role = get_current_user_role()
+    is_super = (role == "SUPER_ADMIN")
+    tenant = await get_tenant()
+    branding = await get_tenant_branding()
+    
+    is_impersonating = False
+    impersonated_tenant_id = None
+    if is_super:
+        imp_tenant = request.cookies.get("impersonated_tenant_id", "").strip()
+        if imp_tenant:
+            is_impersonating = True
+            impersonated_tenant_id = imp_tenant
+
+    logger.info(
+        f"AUTH_CONTEXT "
+        f"email={email} "
+        f"role={role} "
+        f"tenant={get_current_tenant_id()}"
+    )
+
+    return {
+        "email": email,
+        "role": role,
+        "tenant_id": get_current_tenant_id(),
+        "is_super_admin": is_super,
+        "tenant": tenant,
+        "branding": branding,
+        "is_impersonating": is_impersonating,
+        "impersonated_tenant_id": impersonated_tenant_id,
+    }
+
+
+@app.get("/api/white-label/settings")
+async def api_get_white_label_settings():
+    return await get_tenant_branding()
+
+
+@app.post("/api/white-label/settings")
+async def api_save_white_label_settings(req: BrandingRequest):
+    data = req.dict(exclude_unset=True)
+    tenant = await update_tenant_branding(data, get_current_user_email())
+    return {"status": "saved", "branding": await get_tenant_branding(tenant.get("id") if tenant else None)}
+
+
+@app.get("/api/profile")
+async def api_get_profile():
+    email = get_current_user_email()
+    user_record = await get_user_by_email(email)
+    if not user_record:
+        raise HTTPException(404, "User record not found")
+    tenant = await get_tenant()
+    branding = await get_tenant_branding()
+    pricing = await get_platform_pricing()
+    stats = await get_stats()
+    return {
+        "user_name": user_record.get("full_name") or "",
+        "user_email": email,
+        "tenant_name": tenant.get("company_name") or "",
+        "tenant_status": tenant.get("status") or "",
+        "billing_mode": tenant.get("billing_mode") or "",
+        "wallet_balance": tenant.get("wallet_balance") or 0.0,
+        "account_creation_date": tenant.get("created_at") or "",
+        "pricing": pricing,
+        "branding": branding,
+        "stats": {
+            "total_calls": stats.get("total_calls") or 0,
+            "booked": stats.get("booked") or 0,
+            "booking_rate_percent": stats.get("booking_rate_percent") or 0.0,
+        }
+    }
+
+
+@app.post("/api/profile")
+async def api_update_profile(req: ProfileUpdateRequest):
+    email = get_current_user_email()
+    user_record = await update_user_profile(email, req.full_name)
+    return {"status": "updated", "full_name": user_record.get("full_name") or req.full_name}
+
+
+@app.get("/api/pricing")
+async def api_get_pricing_public():
+    return await get_platform_pricing()
+
+
+@app.post("/api/onboard")
+async def api_onboard_tenant():
+    tenant_id = get_current_tenant_id()
+    await update_tenant(tenant_id, {"onboarded": True}, get_current_user_email())
+    return {"status": "success"}
+
+
+@app.post("/api/upload")
+async def api_upload_file(file: UploadFile = File(...)):
+    upload_dir = Path(__file__).parent / "ui" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in (".png", ".jpg", ".jpeg", ".svg", ".ico"):
+        raise HTTPException(400, "Invalid file format. Supported: PNG, JPG, JPEG, SVG, ICO")
+    
+    filename = f"{secrets.token_hex(8)}{file_ext}"
+    file_path = upload_dir / filename
+    
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+        
+    return {"url": f"/ui/uploads/{filename}"}
+
+
+@app.get("/api/super-admin/summary")
+async def api_super_admin_summary():
+    _require_super_admin()
+    return await get_super_admin_summary()
+
+
+@app.get("/api/super-admin/tenants")
+async def api_super_admin_tenants():
+    _require_super_admin()
+    return await list_tenants()
+
+
+@app.post("/api/super-admin/tenants")
+async def api_super_admin_create_tenant(req: TenantRequest):
+    _require_super_admin()
+    try:
+        data = req.dict(exclude_none=True)
+        tenant = await create_tenant(data, get_current_user_email())
+        invite = tenant.pop("invite", None)
+        resp: dict = {"status": "created", "tenant": tenant}
+        if invite:
+            resp["invite"] = invite
+        return resp
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/super-admin/pricing")
+async def api_super_admin_get_pricing():
+    _require_super_admin()
+    return await get_platform_pricing()
+
+
+@app.post("/api/super-admin/pricing")
+async def api_super_admin_set_pricing(req: PricingRequest):
+    _require_super_admin()
+    # Store under default tenant settings
+    tokens = set_request_context(DEFAULT_TENANT_ID, get_current_user_email(), "SUPER_ADMIN")
+    try:
+        await set_setting("PRICE_PER_CALL_ATTEMPT", str(req.price_per_call_attempt))
+        await set_setting("PRICE_PER_APPOINTMENT", str(req.price_per_appointment))
+    finally:
+        reset_request_context(tokens)
+    await audit_log(
+        "Platform Pricing Updated",
+        DEFAULT_TENANT_ID,
+        {"price_per_call_attempt": req.price_per_call_attempt, "price_per_appointment": req.price_per_appointment},
+        get_current_user_email(),
+    )
+    return {"status": "saved", "pricing": await get_platform_pricing()}
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}")
+async def api_super_admin_get_tenant(tenant_id: str):
+    _require_super_admin()
+    tenant = await get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return tenant
+
+
+@app.put("/api/super-admin/tenants/{tenant_id}")
+async def api_super_admin_update_tenant(tenant_id: str, req: TenantUpdateRequest):
+    _require_super_admin()
+    try:
+        tenant = await update_tenant(tenant_id, req.dict(exclude_unset=True), get_current_user_email())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return {"status": "updated", "tenant": tenant}
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/suspend")
+async def api_super_admin_suspend_tenant(tenant_id: str):
+    _require_super_admin()
+    tenant = await update_tenant_status(tenant_id, "SUSPENDED", get_current_user_email())
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return {"status": "suspended", "tenant": tenant}
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/activate")
+async def api_super_admin_activate_tenant(tenant_id: str):
+    _require_super_admin()
+    tenant = await update_tenant_status(tenant_id, "ACTIVE", get_current_user_email())
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return {"status": "active", "tenant": tenant}
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/disable")
+async def api_super_admin_disable_tenant(tenant_id: str):
+    _require_super_admin()
+    tenant = await update_tenant_status(tenant_id, "DISABLED", get_current_user_email())
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return {"status": "disabled", "tenant": tenant}
+
+
+@app.get("/api/super-admin/audit-logs")
+async def api_super_admin_get_all_audit_logs(limit: int = 50):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        result = await db.table("tenant_audit_logs").select("*").order("timestamp", desc=True).limit(limit).execute()
+        return result.data or []
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to fetch audit logs: {exc}")
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/audit-logs")
+async def api_super_admin_get_tenant_audit_logs(tenant_id: str, limit: int = 100):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        result = await db.table("tenant_audit_logs").select("*").eq("tenant_id", tenant_id).order("timestamp", desc=True).limit(limit).execute()
+        return result.data or []
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to fetch tenant audit logs: {exc}")
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/usage")
+async def api_super_admin_get_tenant_usage(tenant_id: str):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        calls = (await db.table("call_logs").select("id").eq("tenant_id", tenant_id).execute()).data or []
+        campaigns = (await db.table("campaigns").select("id").eq("tenant_id", tenant_id).execute()).data or []
+        appointments = (await db.table("appointments").select("id").eq("tenant_id", tenant_id).execute()).data or []
+        return {
+            "total_calls": len(calls),
+            "total_campaigns": len(campaigns),
+            "total_appointments": len(appointments),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to get tenant usage: {exc}")
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/api-keys")
+async def api_super_admin_get_tenant_api_keys(tenant_id: str):
+    _require_super_admin()
+    if not await get_tenant(tenant_id):
+        raise HTTPException(404, "Tenant not found")
+    return await get_tenant_api_keys(tenant_id)
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/api-keys")
+async def api_super_admin_save_tenant_api_keys(tenant_id: str, req: TenantApiKeysRequest):
+    _require_super_admin()
+    if not await get_tenant(tenant_id):
+        raise HTTPException(404, "Tenant not found")
+    try:
+        await save_tenant_api_keys(tenant_id, req.keys, req.mode, get_current_user_email())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"status": "saved"}
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/wallet/add")
+async def api_super_admin_add_wallet(tenant_id: str, req: WalletRequest):
+    _require_super_admin()
+    try:
+        tenant = await add_wallet_credits(tenant_id, req.amount, get_current_user_email(), req.reason)
+        return {"status": "updated", "tenant": tenant}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/wallet/deduct")
+async def api_super_admin_deduct_wallet(tenant_id: str, req: WalletRequest):
+    _require_super_admin()
+    try:
+        tenant = await deduct_wallet_credits(tenant_id, req.amount, get_current_user_email(), req.reason)
+        return {"status": "updated", "tenant": tenant}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/wallet/add")
+async def api_tenant_add_wallet(req: WalletRequest):
+    tenant_id = get_current_tenant_id()
+    try:
+        tenant = await add_wallet_credits(tenant_id, req.amount, get_current_user_email(), req.reason or "Tenant self-service demo top-up")
+        return {"status": "updated", "tenant": tenant}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/call")
 async def api_dispatch_call(req: CallRequest):
+    await _require_active("outbound call")
+    await _require_wallet_sufficient("outbound call")  # blocks MANAGED tenants with zero balance
     url    = await eff("LIVEKIT_URL")
     key    = await eff("LIVEKIT_API_KEY")
     secret = await eff("LIVEKIT_API_SECRET")
@@ -345,14 +902,20 @@ async def api_dispatch_call(req: CallRequest):
         "prompt_source": prompt_source,
         "canonical_phone": phone,
         "direction": "outbound",
+        "tenant_id": get_current_tenant_id(),
     }
     if effective_voice:  metadata["voice_override"] = effective_voice
     if effective_model:  metadata["model_override"] = effective_model
     if effective_tools is not None: metadata["tools_override"] = effective_tools
+    # Inject resolved credentials so agent.py uses per-tenant BYOK keys if set
+    metadata["google_api_key"]    = await eff("GOOGLE_API_KEY")
+    metadata["gemini_model"]      = await eff("GEMINI_MODEL")
+    metadata["gemini_voice"]      = await eff("GEMINI_TTS_VOICE")
+    metadata["outbound_trunk_id"] = await eff("OUTBOUND_TRUNK_ID")
 
     lk = None
     session = None
-    _active_call_started(room_name, phone, req.lead_name, "dispatching")
+    _active_call_started(room_name, phone, req.lead_name, "dispatching", get_current_tenant_id())
     call_session_id = await create_call_session(
         room_name=room_name,
         direction="outbound",
@@ -362,6 +925,15 @@ async def api_dispatch_call(req: CallRequest):
         metadata=metadata,
     )
     metadata["call_session_id"] = call_session_id
+    # Deduct call attempt platform fee (all billing modes pay platform fees; deduction is non-blocking)
+    pricing = await get_platform_pricing()
+    if pricing["price_per_call_attempt"] > 0:
+        asyncio.create_task(
+            deduct_wallet_for_event(
+                get_current_tenant_id(), "call_attempt",
+                pricing["price_per_call_attempt"], get_current_user_email()
+            )
+        )
     try:
         from livekit import api as lk_api
         session = livekit_client_session()
@@ -411,6 +983,7 @@ async def api_dispatch_call(req: CallRequest):
 
 @app.post("/api/inbound/dispatch")
 async def api_dispatch_inbound(req: InboundDispatchRequest):
+    await _require_active("inbound call")
     url    = await eff("LIVEKIT_URL")
     key    = await eff("LIVEKIT_API_KEY")
     secret = await eff("LIVEKIT_API_SECRET")
@@ -480,6 +1053,7 @@ async def api_dispatch_inbound(req: InboundDispatchRequest):
         "prompt_source": prompt_source,
         "canonical_phone": phone,
         "direction": "inbound",
+        "tenant_id": get_current_tenant_id(),
     }
     if effective_voice:
         metadata["voice_override"] = effective_voice
@@ -490,7 +1064,7 @@ async def api_dispatch_inbound(req: InboundDispatchRequest):
 
     lk = None
     session = None
-    _active_call_started(room_name, phone, req.lead_name, "connected")
+    _active_call_started(room_name, phone, req.lead_name, "connected", get_current_tenant_id())
     call_session_id = await create_call_session(
         room_name=room_name,
         direction="inbound",
@@ -558,6 +1132,7 @@ async def api_get_calls(page: int = 1, limit: int = 20):
 @app.get("/api/calls/active")
 async def api_get_active_calls():
     now = time.time()
+    tenant_id = get_current_tenant_id()
     transcripts = await get_recent_transcripts(limit=200)
     transcript_by_room: dict[str, dict] = {}
     for row in transcripts:
@@ -574,6 +1149,7 @@ async def api_get_active_calls():
                     parts = room.split("-")
                     phone_guess = "+" + parts[2] if len(parts) > 2 else ""
                 _active_calls[room] = {
+                    "tenant_id": tenant_id,
                     "room_name": room,
                     "phone": phone_guess,
                     "lead_name": "there",
@@ -587,6 +1163,8 @@ async def api_get_active_calls():
     recent_logs = await get_all_calls(page=1, limit=50)
     out = []
     for room, call in list(_active_calls.items()):
+        if (call.get("tenant_id") or DEFAULT_TENANT_ID) != tenant_id:
+            continue
         ended_at = call.get("ended_at")
         if ended_at and now - float(ended_at) > 60:
             _active_calls.pop(room, None)
@@ -684,6 +1262,7 @@ async def api_get_appointments(date: Optional[str] = None):
 
 @app.delete("/api/appointments/{appointment_id}")
 async def api_cancel_appointment(appointment_id: str):
+    await _require_active("appointment booking")
     ok = await cancel_appointment(appointment_id)
     if not ok:
         raise HTTPException(404, "Appointment not found or already cancelled")
@@ -721,23 +1300,18 @@ async def api_get_settings():
 async def api_save_settings(req: SettingsRequest):
     filtered = {k: v for k, v in req.settings.items() if v is not None and v != ""}
     filtered.pop("ADMIN_TOKEN", None)
+    if "DEFAULT_TRANSFER_NUMBER" in filtered and not _valid_e164(str(filtered["DEFAULT_TRANSFER_NUMBER"])):
+        raise HTTPException(400, "Transfer number must be in E.164 format, for example +919876543210")
     await save_settings(filtered)
-    for k, v in filtered.items():
-        os.environ[k] = str(v)
+    if filtered:
+        await audit_log("API Keys Updated", get_current_tenant_id(), {"keys": list(filtered.keys())}, get_current_user_email())
+    if get_current_tenant_id() == DEFAULT_TENANT_ID:
+        for k, v in filtered.items():
+            os.environ[k] = str(v)
     return {"status": "saved", "count": len(filtered)}
 
 
-@app.post("/api/admin/change-token")
-async def api_change_admin_token(req: AdminTokenChangeRequest):
-    current = await _admin_token()
-    new_token = (req.new_token or "").strip()
-    if len(new_token) < 8:
-        raise HTTPException(400, "New admin token must be at least 8 characters")
-    if current and not secrets.compare_digest((req.current_token or "").strip(), current):
-        raise HTTPException(403, "Current admin token is incorrect")
-    await set_setting("ADMIN_TOKEN", new_token)
-    os.environ["ADMIN_TOKEN"] = new_token
-    return {"status": "updated"}
+# Removed api_change_admin_token endpoint
 
 
 # ── SIP trunk setup ───────────────────────────────────────────────────────────
@@ -774,7 +1348,8 @@ async def api_setup_trunk():
         )
         trunk_id = trunk.sip_trunk_id
         await set_setting("OUTBOUND_TRUNK_ID", trunk_id)
-        os.environ["OUTBOUND_TRUNK_ID"] = trunk_id
+        if get_current_tenant_id() == DEFAULT_TENANT_ID:
+            os.environ["OUTBOUND_TRUNK_ID"] = trunk_id
         return {"status": "created", "trunk_id": trunk_id}
     except Exception as exc:
         raise HTTPException(500, f"Trunk creation failed: {exc}")
@@ -903,6 +1478,8 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             "system_prompt_override_present": bool(prompt),
             "prompt_source": prompt_source,
             "canonical_phone": contact["phone"],
+            "direction": "outbound",
+            "tenant_id": get_current_tenant_id(),
         }
         if profile:
             if not metadata["system_prompt"] and profile.get("system_prompt"):
@@ -911,7 +1488,12 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
             if profile.get("voice"):         metadata["voice_override"] = profile["voice"]
             if profile.get("model"):         metadata["model_override"] = profile["model"]
             if profile.get("enabled_tools") is not None: metadata["tools_override"] = profile["enabled_tools"]
-        _active_call_started(room_name, contact["phone"], contact.get("lead_name", "there"), "dispatching")
+        # Inject resolved credentials so agent.py uses per-tenant BYOK keys if set
+        metadata["google_api_key"]    = await eff("GOOGLE_API_KEY")
+        metadata["gemini_model"]      = await eff("GEMINI_MODEL")
+        metadata["gemini_voice"]      = await eff("GEMINI_TTS_VOICE")
+        metadata["outbound_trunk_id"] = await eff("OUTBOUND_TRUNK_ID")
+        _active_call_started(room_name, contact["phone"], contact.get("lead_name", "there"), "dispatching", get_current_tenant_id())
         logger.info("Campaign room create: room=%s phone=%s", room_name, contact.get("phone"))
         await lk.room.create_room(lk_api.CreateRoomRequest(name=room_name, empty_timeout=300, max_participants=5))
         _active_call_update(room_name, "dialing", "Campaign room created; agent dispatch requested")
@@ -936,6 +1518,16 @@ async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> Non
         await log_error("server", "Campaign run skipped", f"campaign_id={campaign_id}; reason=already_running", "warning")
         return
     _running_campaigns.add(campaign_id)
+    campaign_probe = await get_campaign_for_worker(campaign_id)
+    if campaign_probe and campaign_probe.get("tenant_id"):
+        set_request_context(campaign_probe.get("tenant_id"), get_current_user_email(), "TENANT_ADMIN")
+    try:
+        await require_active_tenant("campaign execution")
+    except PermissionError as exc:
+        await log_error("server", "Campaign run blocked", f"campaign_id={campaign_id}; reason={exc}", "warning")
+        await update_campaign_run_stats(campaign_id, 0, 0, "failed")
+        _running_campaigns.discard(campaign_id)
+        return
     campaign = await get_campaign(campaign_id)
     if not campaign:
         _running_campaigns.discard(campaign_id)
@@ -974,6 +1566,7 @@ async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> Non
     from livekit import api as lk_api_module
     session = livekit_client_session()
 
+    campaign_pricing = await get_platform_pricing()
     ok_count = fail_count = skipped_count = 0
     final_status = "failed"
     try:
@@ -985,10 +1578,27 @@ async def _run_campaign(campaign_id: str, trigger_source: str = "manual") -> Non
                 fail_count += 1
                 await log_error("server", "Campaign contact skipped", f"campaign_id={campaign_id}; phone={phone or 'missing'}; reason=invalid_phone", "warning")
                 continue
+            # Per-contact wallet check (stop campaign if balance depleted)
+            if campaign_pricing["price_per_call_attempt"] > 0:
+                try:
+                    wallet_tenant = await get_tenant(get_current_tenant_id())
+                    if wallet_tenant and float(wallet_tenant.get("wallet_balance") or 0) <= 0:
+                        await log_error("server", "Campaign halted — wallet depleted", f"campaign_id={campaign_id}; stopped_at={i}/{len(contacts)}", "warning")
+                        break
+                except Exception:
+                    pass
             room_name = f"camp-{campaign_id[:8]}-{phone.replace('+','')}-{random.randint(100,999)}"
             success, reason = await _dispatch_one(lk, lk_api_module, contact, room_name, prompt, profile)
             if success:
                 ok_count += 1
+                # Deduct call attempt fee (non-blocking)
+                if campaign_pricing["price_per_call_attempt"] > 0:
+                    asyncio.create_task(
+                        deduct_wallet_for_event(
+                            get_current_tenant_id(), "campaign_call_attempt",
+                            campaign_pricing["price_per_call_attempt"], get_current_user_email()
+                        )
+                    )
             else:
                 fail_count += 1
                 await log_error("server", "Campaign contact failed", f"campaign_id={campaign_id}; phone={phone}; reason={reason}", "error")
@@ -1055,6 +1665,7 @@ def _schedule_campaign(campaign_id: str, schedule_type: str, schedule_time: str)
 
 @app.post("/api/campaigns")
 async def api_create_campaign(req: CampaignRequest):
+    await _require_active("campaign execution")
     if not req.contacts:
         raise HTTPException(400, "contacts list cannot be empty")
     if req.schedule_type not in ("once", "daily", "weekdays"):
@@ -1095,6 +1706,7 @@ async def api_delete_campaign_endpoint(campaign_id: str):
 
 @app.post("/api/campaigns/{campaign_id}/run")
 async def api_run_campaign_now(campaign_id: str):
+    await _require_active("campaign execution")
     campaign = await get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(404, "Campaign not found")
@@ -1104,6 +1716,7 @@ async def api_run_campaign_now(campaign_id: str):
 
 @app.patch("/api/campaigns/{campaign_id}/status")
 async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
+    await _require_active("campaign execution")
     if req.status not in ("active", "paused", "completed", "running", "partial", "failed"):
         raise HTTPException(400, "status must be: active | paused | completed | running | partial | failed")
     ok = await update_campaign_status(campaign_id, req.status)
@@ -1118,7 +1731,6 @@ async def api_update_campaign_status(campaign_id: str, req: StatusRequest):
         if campaign and campaign.get("schedule_type") in ("daily", "weekdays"):
             _schedule_campaign(campaign_id, campaign["schedule_type"], campaign.get("schedule_time", "09:00"))
     return {"status": req.status}
-
 
 
 @app.post("/api/simulate-call")

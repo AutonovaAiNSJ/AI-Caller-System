@@ -277,6 +277,22 @@ class AppointmentTools(llm.ToolContext):
             self._booking_confirmed = True
             self._booking_error = None
             await _log("Supabase appointment insert succeeded", f"booking_id={booking_id}", "info")
+
+            # Deduct appointment platform fee (non-blocking — does not affect booking confirmation)
+            try:
+                from db import get_platform_pricing, deduct_wallet_for_event, get_current_tenant_id, get_current_user_email
+                appt_pricing = await get_platform_pricing()
+                tenant_id = get_current_tenant_id()
+                if appt_pricing["price_per_appointment"] > 0 and tenant_id:
+                    asyncio.create_task(
+                        deduct_wallet_for_event(
+                            tenant_id, "appointment_booked",
+                            appt_pricing["price_per_appointment"], get_current_user_email()
+                        )
+                    )
+            except Exception as billing_exc:
+                await _log("Appointment billing deduction failed (non-fatal)", str(billing_exc), "warning")
+
             
             # Send confirmation email if tool is enabled
             enabled = await get_enabled_tools()

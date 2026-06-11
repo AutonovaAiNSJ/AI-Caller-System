@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -51,21 +52,29 @@ nav{display:flex;flex-direction:column;gap:5px;overflow:visible;padding-right:2p
 @media(max-width:900px){.app-shell{display:block}.sidebar{position:sticky;top:0;width:100%;height:auto;max-height:72vh;padding:12px;overflow:auto;box-shadow:var(--shadow)}.brand{padding-bottom:10px}nav{flex-direction:row;overflow-x:auto;align-items:flex-start}.nav-group{flex:0 0 auto}.nav-group-toggle,.tab-btn{width:auto}.nav-children{position:absolute;display:none;margin:6px 0 0 0;padding:8px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 30px rgba(16,24,40,.12);z-index:120}.nav-group.open>.nav-children{display:flex}.sidebar-status{display:none}.main-area{min-width:0}.topbar{padding:14px 16px}main{padding:18px 16px 32px}}
 @media(max-width:600px){.kpi-grid,.form-row,.settings-grid{grid-template-columns:1fr}.chart-grid{grid-template-columns:1fr}.recent-item{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.btn-group{flex-direction:column}.btn{width:100%}.note-input{width:140px}}
 @media(max-width:720px){.log-line{grid-template-columns:1fr;gap:4px}.transcript-line{grid-template-columns:1fr}.timeline-item{display:grid}}
+/* Onboarding Screen & Profile Drawer styling */
+body.onboarding-locked .app-shell {
+  display: none !important;
+}
+.onboarding-container {
+  display: none;
+  background: var(--bg);
+  min-height: 100vh;
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+body.onboarding-locked .onboarding-container {
+  display: block;
+}
+.profile-drawer-btn {
+  white-space: nowrap;
+}
 </style>
 </head>
-<body class="auth-locked">
-<div id="auth-screen" class="auth-screen show">
-  <div class="auth-card">
-    <img src="/ui/ai_voice_logo.png" alt="Logo" style="width: 48px; height: 48px; object-fit: contain; margin-bottom: 16px;" />
-    <h1>Unlock OutboundAI</h1>
-    <p>Enter the admin token to access calls, settings, logs, and campaign controls.</p>
-    <label for="admin-token-input">Admin Token</label>
-    <input id="admin-token-input" type="password" autocomplete="current-password" placeholder="Paste admin token"/>
-    <div class="auth-actions">
-      <button class="btn btn-primary" id="auth-unlock-btn" type="button" onclick="unlockDashboard(this)">Unlock Dashboard</button>
-    </div>
-    <div id="auth-error" class="auth-error"></div>
-  </div>
+<body>
+<div id="viewing-as-tenant-banner" style="display:none;background:#fef3c7;border-bottom:1px solid #f59e0b;padding:8px 24px;text-align:center;font-weight:500;color:#92400e;z-index:99999;position:relative;align-items:center;justify-content:center;gap:12px;">
+  <span>You are viewing this workspace as Tenant: <strong id="banner-tenant-name">Tenant</strong></span>
+  <a href="#" onclick="stopImpersonating(event)" class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;color:#92400e;border-color:#f59e0b;background:#fffbeb;">Back to Super Admin</a>
 </div>
 <div class="app-shell">
   <aside class="sidebar">
@@ -145,6 +154,7 @@ nav{display:flex;flex-direction:column;gap:5px;overflow:visible;padding-right:2p
           <svg style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); pointer-events: none;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="text" placeholder="Search workspace..." style="padding: 6px 12px 6px 30px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: #ffffff; width: 100%; font-family: var(--sans);" />
         </div> -->
+        <button class="btn btn-secondary btn-sm profile-drawer-btn" style="white-space: nowrap;" type="button" onclick="openProfileDrawer()">Profile</button>
         <button class="btn btn-secondary btn-sm logout-btn" style="white-space: nowrap;" type="button" onclick="logoutDashboard()">Logout</button>
       </div>
     </header>
@@ -862,19 +872,883 @@ nav{display:flex;flex-direction:column;gap:5px;overflow:visible;padding-right:2p
   <div id="call-detail-content" class="detail-list"></div>
 </aside>
 
+<div id="profile-drawer-backdrop" class="drawer-backdrop" onclick="closeProfileDrawer()"></div>
+<aside id="profile-drawer" class="drawer" aria-hidden="true">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+    <div>
+      <div class="section-label" style="margin:0 0 4px">My Profile</div>
+      <h2 style="font-size:20px">Profile & Branding</h2>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="closeProfileDrawer()">Close</button>
+  </div>
+  
+  <div id="profile-drawer-content" style="display:flex;flex-direction:column;gap:24px;">
+    
+    <!-- User Info Section -->
+    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">User Profile</h3>
+      <form id="profile-user-form" onsubmit="saveUserProfile(event)">
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Display Name</label>
+          <input type="text" id="profile-user-name" placeholder="John Doe" required/>
+        </div>
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Email Address</label>
+          <input type="text" id="profile-user-email" readonly style="background: var(--card2); color: var(--muted);"/>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="width: 100%;">Save Profile Name</button>
+      </form>
+    </div>
+    
+    <!-- Tenant Info & Wallet -->
+    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">Tenant Workspace</h3>
+      <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--muted);">Status</span>
+          <span id="profile-status-badge">-</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--muted);">Billing Mode</span>
+          <strong id="profile-billing-mode">-</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--muted);">Wallet Balance</span>
+          <strong id="profile-wallet-balance">Rs 0.00</strong>
+        </div>
+        <div id="profile-wallet-add-section" style="margin-top: 6px;">
+          <form onsubmit="addDemoCredits(event, 'profile-wallet-input')">
+            <div style="display: flex; gap: 8px;">
+              <input type="number" id="profile-wallet-input" placeholder="Amount" min="1" max="10000" style="padding: 6px 8px; font-size: 12px;" required/>
+              <button type="submit" class="btn btn-secondary btn-sm">Add Demo Credits</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Workspace Branding -->
+    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">Workspace Branding</h3>
+      <form id="profile-branding-form" onsubmit="saveProfileBranding(event)">
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Company Name</label>
+          <input type="text" id="profile-brand-name" placeholder="My Calling Company" required/>
+        </div>
+        
+        <div class="form-row" style="margin-bottom: 10px; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div class="form-group">
+            <label>Primary Color</label>
+            <div style="display: flex; gap: 4px;">
+              <input type="color" id="profile-brand-primary" style="width: 32px; height: 32px; padding: 2px;" />
+              <input type="text" id="profile-brand-primary-hex" placeholder="#5B5BD6" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 6px; font-size: 12px;" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Secondary Color</label>
+            <div style="display: flex; gap: 4px;">
+              <input type="color" id="profile-brand-secondary" style="width: 32px; height: 32px; padding: 2px;" />
+              <input type="text" id="profile-brand-secondary-hex" placeholder="#00b894" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 6px; font-size: 12px;" />
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Logo URL</label>
+          <input type="text" id="profile-logo-url" placeholder="https://example.com/logo.png" style="font-size: 12px;"/>
+          <div style="margin-top: 4px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <input type="file" id="profile-logo-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'profile-logo-status', 'profile-logo-clear-btn')" style="font-size: 11px; padding: 4px;"/>
+              <span id="profile-logo-status" style="font-size: 11px; color: var(--muted);"></span>
+              <button type="button" id="profile-logo-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('profile-logo-file', 'profile-logo-status', 'profile-logo-clear-btn')">Remove file</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Favicon URL</label>
+          <input type="text" id="profile-favicon-url" placeholder="https://example.com/favicon.ico" style="font-size: 12px;"/>
+          <div style="margin-top: 4px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <input type="file" id="profile-favicon-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'profile-favicon-status', 'profile-favicon-clear-btn')" style="font-size: 11px; padding: 4px;"/>
+              <span id="profile-favicon-status" style="font-size: 11px; color: var(--muted);"></span>
+              <button type="button" id="profile-favicon-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('profile-favicon-file', 'profile-favicon-status', 'profile-favicon-clear-btn')">Remove file</button>
+            </div>
+          </div>
+        </div>
+        
+        <button type="submit" class="btn btn-primary btn-sm" style="width: 100%; margin-top: 8px;">Save Branding Settings</button>
+      </form>
+    </div>
+    
+    <!-- API Credentials -->
+    <div>
+      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">API Key Credentials</h3>
+      <form id="profile-keys-form" onsubmit="saveProfileKeys(event)">
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>Gemini API Key</label>
+          <input type="password" id="profile-key-gemini" placeholder="GOOGLE_API_KEY"/>
+        </div>
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>LiveKit URL</label>
+          <input type="text" id="profile-key-livekit-url" placeholder="wss://...livekit.cloud"/>
+        </div>
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>LiveKit API Key</label>
+          <input type="text" id="profile-key-livekit-key" placeholder="LIVEKIT_API_KEY"/>
+        </div>
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label>LiveKit API Secret</label>
+          <input type="password" id="profile-key-livekit-secret" placeholder="LIVEKIT_API_SECRET"/>
+        </div>
+        <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Save Credentials</button>
+      </form>
+    </div>
+    
+  </div>
+</aside>
+
+<div id="onboarding-screen" class="onboarding-container" style="display:none;">
+  <div style="max-width: 1200px; margin: 0 auto;">
+    <!-- Header -->
+    <div style="text-align: center; margin-bottom: 40px; background: linear-gradient(135deg, var(--accent), #8b8bf4); padding: 40px; border-radius: 16px; color: #fff; box-shadow: var(--shadow);">
+      <h1 style="font-size: 32px; font-weight: 700; font-family: 'Manrope', sans-serif; margin-bottom: 10px;">Welcome to Autonova!</h1>
+      <p style="font-size: 16px; opacity: 0.9;">Let's customize and set up your Calling Workspace to get started.</p>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;">
+      
+      <!-- Left Column -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Tenant Info Card -->
+        <div class="card">
+          <div class="card-title">Tenant Account Info</div>
+          <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Account Slug</span>
+              <strong id="onboard-slug">-</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Status</span>
+              <span id="onboard-status-badge">-</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Billing Mode</span>
+              <strong id="onboard-billing-mode">-</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Account Created</span>
+              <strong id="onboard-created">-</strong>
+            </div>
+          </div>
+          
+          <div class="card-title" style="margin-top: 24px; margin-bottom: 10px;">Current Platform Pricing</div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Call Attempt</span>
+              <strong id="onboard-price-attempt">-</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding-bottom: 8px;">
+              <span style="color: var(--muted);">Appointment Booking</span>
+              <strong id="onboard-price-appointment">-</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Demo Wallet Card -->
+        <div class="card" id="onboard-wallet-card">
+          <div class="card-title">Wallet Balance & Testing Credits</div>
+          <div style="display: flex; align-items: center; justify-content: space-between; margin: 15px 0;">
+            <div>
+              <div style="font-size: 12px; color: var(--muted);">Wallet Balance</div>
+              <div style="font-size: 28px; font-weight: 700; color: var(--text);" id="onboard-wallet-balance">Rs 0.00</div>
+            </div>
+            <div style="text-align: right;">
+              <span class="badge badge-once" id="onboard-wallet-badge">Active</span>
+            </div>
+          </div>
+          
+          <div style="background: var(--bg); border: 1px solid var(--border); padding: 12px; border-radius: 8px; margin-bottom: 16px;">
+            <p style="font-size: 12px; color: var(--muted);">Add demo credits to test outbound calls (Rs 1.00 per attempt, and appt bookings).</p>
+          </div>
+          
+          <form id="onboard-wallet-form" onsubmit="addDemoCredits(event, 'onboard-wallet-input')">
+            <div style="display: flex; gap: 8px;">
+              <input type="number" id="onboard-wallet-input" placeholder="Amount (e.g. 100)" min="1" max="10000" style="padding: 8px 10px;" required/>
+              <button type="submit" class="btn btn-secondary">Add Credits</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Contact Card -->
+        <div class="card">
+          <div class="card-title">Support Information</div>
+          <p style="font-size: 13px; color: var(--muted); margin-bottom: 12px;">Need help setting up your tenant admin workspace or managing your calling campaigns?</p>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div>Email: <a id="onboard-support-email" href="mailto:support@autonova.ai">support@autonova.ai</a></div>
+            <div>Website: <a id="onboard-support-web" href="https://autonova.ai" target="_blank">https://autonova.ai</a></div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Column -->
+      <div style="display: flex; flex-direction: column; gap: 24px;">
+        <!-- Workspace Branding Configuration -->
+        <div class="card">
+          <div class="card-title">Workspace Custom Branding</div>
+          <form id="onboard-branding-form" onsubmit="saveOnboardBranding(event)">
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Company/Workspace Name</label>
+              <input type="text" id="onboard-brand-name" placeholder="My Calling Company" required/>
+            </div>
+            
+            <div class="form-row" style="margin-bottom: 12px; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <div class="form-group">
+                <label>Primary Accent Color</label>
+                <div style="display: flex; gap: 8px;">
+                  <input type="color" id="onboard-brand-primary" style="width: 44px; height: 38px; padding: 2px; border-radius: 4px;" />
+                  <input type="text" id="onboard-brand-primary-hex" placeholder="#5B5BD6" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 8px;" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Secondary Accent Color</label>
+                <div style="display: flex; gap: 8px;">
+                  <input type="color" id="onboard-brand-secondary" style="width: 44px; height: 38px; padding: 2px; border-radius: 4px;" />
+                  <input type="text" id="onboard-brand-secondary-hex" placeholder="#00b894" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 8px;" />
+                </div>
+              </div>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Company Logo URL</label>
+              <input type="text" id="onboard-logo-url" placeholder="https://example.com/logo.png"/>
+              <div style="margin-top: 6px;">
+                <span style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">Or upload image:</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <input type="file" id="onboard-logo-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'onboard-logo-status', 'onboard-logo-clear-btn')" />
+                  <span id="onboard-logo-status" style="font-size: 12px; color: var(--muted);"></span>
+                  <button type="button" id="onboard-logo-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('onboard-logo-file', 'onboard-logo-status', 'onboard-logo-clear-btn')">Remove file</button>
+                </div>
+              </div>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Favicon URL</label>
+              <input type="text" id="onboard-favicon-url" placeholder="https://example.com/favicon.ico"/>
+              <div style="margin-top: 6px;">
+                <span style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">Or upload favicon:</span>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <input type="file" id="onboard-favicon-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'onboard-favicon-status', 'onboard-favicon-clear-btn')" />
+                  <span id="onboard-favicon-status" style="font-size: 12px; color: var(--muted);"></span>
+                  <button type="button" id="onboard-favicon-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('onboard-favicon-file', 'onboard-favicon-status', 'onboard-favicon-clear-btn')">Remove file</button>
+                </div>
+              </div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary" style="margin-top: 8px; width: 100%;">Save Branding Settings</button>
+          </form>
+        </div>
+
+        <!-- API Keys Card (Connect credentials) -->
+        <div class="card">
+          <div class="card-title">Connected API Keys & Gateway</div>
+          <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px;">Configure external provider credentials if operating in BYOK (Bring Your Own Keys) mode.</p>
+          <form id="onboard-keys-form" onsubmit="saveOnboardKeys(event)">
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Gemini API Key</label>
+              <input type="password" id="onboard-key-gemini" placeholder="GOOGLE_API_KEY"/>
+            </div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>LiveKit URL</label>
+              <input type="text" id="onboard-key-livekit-url" placeholder="wss://...livekit.cloud"/>
+            </div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>LiveKit API Key</label>
+              <input type="text" id="onboard-key-livekit-key" placeholder="LIVEKIT_API_KEY"/>
+            </div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>LiveKit API Secret</label>
+              <input type="password" id="onboard-key-livekit-secret" placeholder="LIVEKIT_API_SECRET"/>
+            </div>
+            
+            <button type="submit" class="btn btn-secondary" style="width: 100%;">Save Credentials</button>
+          </form>
+        </div>
+      </div>
+      
+    </div>
+    
+    <!-- Launch Section -->
+    <div style="text-align: center; margin-top: 40px; padding-top: 30px; border-top: 1px solid var(--border);">
+      <button class="btn btn-primary" style="font-size: 16px; padding: 12px 36px; border-radius: 8px;" onclick="launchWorkspace()">Launch Workspace & Go to Dashboard 🚀</button>
+    </div>
+    
+  </div>
+</div>
+
 <div id="toast-container"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const $=id=>document.getElementById(id);
-const AUTH_KEY='outboundai_admin_token';
+let SUPABASE_URL = "";
+let SUPABASE_ANON_KEY = "";
+let supabaseClient = null;
+
+function setCookie(name, value, seconds) {
+  let expires = "";
+  if (seconds) {
+    const date = new Date();
+    date.setTime(date.getTime() + (seconds * 1000));
+    expires = "; expires=" + date.toUTCString();
+  }
+  document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Lax";
+}
+
 const rawFetch=window.fetch.bind(window);
-function adminToken(){return localStorage.getItem(AUTH_KEY)||''}
-function setAuthScreen(show,msg=''){document.body.classList.toggle('auth-locked',show);$('auth-screen')?.classList.toggle('show',show);if($('auth-error'))$('auth-error').textContent=msg}
-function logoutDashboard(msg=''){localStorage.removeItem(AUTH_KEY);setAuthScreen(true,msg||'Logged out.')}
-window.fetch=async(input,init={})=>{const url=typeof input==='string'?input:(input?.url||''),sameOrigin=!/^https?:\/\//i.test(url)||url.startsWith(location.origin);const headers=new Headers(init.headers||{}),token=adminToken();if(token&&sameOrigin){headers.set('Authorization',`Bearer ${token}`)}const res=await rawFetch(input,{...init,headers});if(res.status===401&&sameOrigin){localStorage.removeItem(AUTH_KEY);setAuthScreen(true,'Session expired or invalid token.');}return res};
-async function validateAdminAccess(){const r=await fetch('/api/stats');if(!r.ok)throw new Error(await responseMessage(r));return true}
-async function unlockDashboard(btn=null){const token=$('admin-token-input')?.value.trim();if(!token){setAuthScreen(true,'Enter the admin token.');return}localStorage.setItem(AUTH_KEY,token);if(btn)setButtonLoading(btn,true,'Checking...');try{await validateAdminAccess();setAuthScreen(false,'');initAppData()}catch(e){localStorage.removeItem(AUTH_KEY);setAuthScreen(true,'Session expired or invalid token.')}finally{if(btn)setButtonLoading(btn,false)}}
-async function bootstrapAuth(){if(adminToken()){try{await validateAdminAccess();setAuthScreen(false,'');initAppData();return}catch(e){localStorage.removeItem(AUTH_KEY);setAuthScreen(true,'Session expired or invalid token.');return}}try{await validateAdminAccess();setAuthScreen(false,'');initAppData()}catch(e){setAuthScreen(true,'')}}
+
+async function getSupabase() {
+  if (!supabaseClient) {
+    try {
+      const res = await rawFetch("/api/auth/config");
+      if (res.ok) {
+        const config = await res.json();
+        SUPABASE_URL = config.supabase_url;
+        SUPABASE_ANON_KEY = config.supabase_anon_key;
+      }
+    } catch (err) {
+      console.warn("Failed to load auth config", err);
+    }
+    if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+      supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+  }
+  return supabaseClient;
+}
+
+async function logoutDashboard() {
+  const sb = await getSupabase();
+  if (sb) {
+    try {
+      await sb.auth.signOut();
+    } catch(err) {
+      console.warn('SignOut failed', err);
+    }
+  }
+  setCookie("sb-access-token", "", -1);
+  setCookie("sb-refresh-token", "", -1);
+  window.location.replace('/ui/login.html');
+}
+
+async function stopImpersonating(e) {
+  if (e) e.preventDefault();
+  try {
+    await fetch('/api/super-admin/impersonate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant_id: null })
+    });
+    window.location.href = '/ui/admin.html';
+  } catch (err) {
+    console.error('Failed to stop impersonating', err);
+    window.location.href = '/ui/admin.html';
+  }
+}
+
+window.fetch=async(input,init={})=>{
+  const url=typeof input==='string'?input:(input?.url||''),sameOrigin=!/^https?:\/\//i.test(url)||url.startsWith(location.origin);
+  if (sameOrigin && !url.includes('/api/auth/config')) {
+    try {
+      const sb = await getSupabase();
+      if (sb) {
+        const { data: { session } } = await sb.auth.getSession();
+        if (session && session.access_token) {
+          init.headers = {
+            ...init.headers,
+            "Authorization": `Bearer ${session.access_token}`
+          };
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to inject auth header", err);
+    }
+  }
+  const res=await rawFetch(input,init);
+  if ((res.status===401 || res.status===403) && sameOrigin && !url.includes('/api/auth/context') && !url.includes('/api/auth/register')) {
+    window.location.replace('/ui/login.html');
+  }
+  return res;
+};
+
+function applyBranding(branding) {
+  if (!branding) return;
+  const companyName = branding.company_name || 'OutboundAI';
+  const logo = branding.company_logo || '/ui/ai_voice_logo.png';
+  const favicon = branding.favicon || '/ui/ai_voice_logo.png';
+  const primary = branding.primary_color || '#5B5BD6';
+  const secondary = branding.secondary_color || '#00b894';
+
+  document.title = `${companyName} - Dashboard`;
+  
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.getElementsByTagName('head')[0].appendChild(link);
+  }
+  link.href = favicon;
+
+  const brandTitle = document.querySelector('.brand-text strong');
+  if (brandTitle) brandTitle.textContent = companyName;
+  
+  const logoImgs = document.querySelectorAll('.brand img');
+  logoImgs.forEach(img => { img.src = logo; });
+
+  document.documentElement.style.setProperty('--accent', primary);
+  document.documentElement.style.setProperty('--accent2', secondary);
+  document.documentElement.style.setProperty('--purple', primary);
+}
+
+async function bootstrapAuth(){
+  try {
+    const sb = await getSupabase();
+    let token = "";
+    if (sb) {
+      const { data: { session } } = await sb.auth.getSession();
+      if (session) {
+        token = session.access_token;
+        setCookie("sb-access-token", session.access_token, session.expires_in);
+        setCookie("sb-refresh-token", session.refresh_token, 30 * 86400);
+      } else {
+        window.location.replace('/ui/login.html');
+        return;
+      }
+      
+      sb.auth.onAuthStateChange((event, newSession) => {
+        if (newSession) {
+          setCookie("sb-access-token", newSession.access_token, newSession.expires_in);
+          setCookie("sb-refresh-token", newSession.refresh_token, 30 * 86400);
+        } else {
+          setCookie("sb-access-token", "", -1);
+          setCookie("sb-refresh-token", "", -1);
+          window.location.replace('/ui/login.html');
+        }
+      });
+    }
+
+    const headers = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const res = await fetch('/api/auth/context', { headers });
+    if (!res.ok) {
+      window.location.replace('/ui/login.html');
+      return;
+    }
+    const data = await res.json();
+    applyBranding(data.branding);
+    
+    if (data.is_impersonating && data.tenant) {
+      $('banner-tenant-name').textContent = data.tenant.company_name;
+      $('viewing-as-tenant-banner').style.display = 'flex';
+    } else {
+      $('viewing-as-tenant-banner').style.display = 'none';
+    }
+    
+    if (data.is_super_admin) {
+      const adminChildren = document.querySelector('.nav-group[data-group="admin"] .nav-children');
+      if (adminChildren && !adminChildren.querySelector('.super-admin-link')) {
+        const btn = document.createElement('a');
+        btn.href = '/ui/admin.html';
+        btn.className = 'tab-btn super-admin-link';
+        btn.innerHTML = `<span class="tab-icon">${iconSvg('admin')}</span>Super Admin`;
+        btn.style.display = 'flex';
+        btn.style.alignItems = 'center';
+        btn.style.textDecoration = 'none';
+        adminChildren.appendChild(btn);
+      }
+    }
+    const isOnboarded = data.tenant ? data.tenant.onboarded : true;
+    if (!isOnboarded && data.tenant_id !== 'default') {
+      document.body.classList.add('onboarding-locked');
+      $('onboarding-screen').style.display = 'block';
+      await loadOnboardingData();
+    } else {
+      document.body.classList.remove('onboarding-locked');
+      $('onboarding-screen').style.display = 'none';
+      initAppData();
+    }
+  } catch (err) {
+    console.error('Auth context check failed', err);
+    window.location.replace('/ui/login.html');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Onboarding & Profile Functionality
+
+function syncColorInputs(pickerId, hexId) {
+  const picker = $(pickerId);
+  const hex = $(hexId);
+  if (picker && hex) {
+    picker.addEventListener('input', () => {
+      hex.value = picker.value.toUpperCase();
+    });
+    hex.addEventListener('input', () => {
+      if (/^#[0-9A-Fa-f]{6}$/.test(hex.value)) {
+        picker.value = hex.value;
+      }
+    });
+  }
+}
+
+// Set up color picker listeners
+document.addEventListener('DOMContentLoaded', () => {
+  syncColorInputs('onboard-brand-primary', 'onboard-brand-primary-hex');
+  syncColorInputs('onboard-brand-secondary', 'onboard-brand-secondary-hex');
+  syncColorInputs('profile-brand-primary', 'profile-brand-primary-hex');
+  syncColorInputs('profile-brand-secondary', 'profile-brand-secondary-hex');
+});
+
+function openProfileDrawer() {
+  $('profile-drawer-backdrop').classList.add('open');
+  $('profile-drawer').classList.add('open');
+  $('profile-drawer').setAttribute('aria-hidden', 'false');
+  loadProfileData();
+}
+
+function closeProfileDrawer() {
+  $('profile-drawer-backdrop').classList.remove('open');
+  $('profile-drawer').classList.remove('open');
+  $('profile-drawer').setAttribute('aria-hidden', 'true');
+}
+
+async function loadProfileData() {
+  try {
+    const profile = await api('/api/profile');
+    
+    // User Profile Info
+    $('profile-user-name').value = profile.user_name || '';
+    $('profile-user-email').value = profile.user_email || '';
+    
+    // Tenant Workspace Details
+    $('profile-status-badge').innerHTML = badge(profile.tenant_status);
+    $('profile-billing-mode').textContent = profile.billing_mode;
+    $('profile-wallet-balance').textContent = `Rs ${(profile.wallet_balance ?? 0.0).toFixed(2)}`;
+    
+    // Hide wallet section for BYOK tenants
+    if (profile.billing_mode === 'BYOK') {
+      $('profile-wallet-add-section').style.display = 'none';
+    } else {
+      $('profile-wallet-add-section').style.display = 'block';
+    }
+    
+    // Workspace Branding
+    const branding = profile.branding || {};
+    $('profile-brand-name').value = branding.company_name || '';
+    $('profile-brand-primary').value = branding.primary_color || '#5B5BD6';
+    $('profile-brand-primary-hex').value = branding.primary_color || '#5B5BD6';
+    $('profile-brand-secondary').value = branding.secondary_color || '#00b894';
+    $('profile-brand-secondary-hex').value = branding.secondary_color || '#00b894';
+    $('profile-logo-url').value = branding.company_logo_url || '';
+    $('profile-favicon-url').value = branding.favicon_url || '';
+    
+    // API Keys
+    loadProfileKeys();
+  } catch (err) {
+    console.error('Failed to load profile details', err);
+    toast('Could not load profile details', 'err');
+  }
+}
+
+async function loadProfileKeys() {
+  try {
+    const res = await api('/api/settings');
+    $('profile-key-gemini').value = '';
+    $('profile-key-livekit-url').value = res.LIVEKIT_URL?.value || '';
+    $('profile-key-livekit-key').value = res.LIVEKIT_API_KEY?.value || '';
+    $('profile-key-livekit-secret').value = '';
+  } catch (err) {
+    console.warn('Failed to load settings keys', err);
+  }
+}
+
+async function loadOnboardingKeys() {
+  try {
+    const res = await api('/api/settings');
+    $('onboard-key-gemini').value = '';
+    $('onboard-key-livekit-url').value = res.LIVEKIT_URL?.value || '';
+    $('onboard-key-livekit-key').value = res.LIVEKIT_API_KEY?.value || '';
+    $('onboard-key-livekit-secret').value = '';
+  } catch (err) {
+    console.warn('Failed to load onboarding keys', err);
+  }
+}
+
+async function saveUserProfile(e) {
+  e.preventDefault();
+  const name = $('profile-user-name').value.trim();
+  try {
+    const res = await apiPost('/api/profile', { full_name: name });
+    if (res.ok) {
+      toast('Display name updated');
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to update name', 'err');
+    }
+  } catch (err) {
+    toast('Error updating name', 'err');
+  }
+}
+
+async function saveProfileBranding(e) {
+  e.preventDefault();
+  const name = $('profile-brand-name').value.trim();
+  const primary = $('profile-brand-primary-hex').value.trim();
+  const secondary = $('profile-brand-secondary-hex').value.trim();
+  const logo = $('profile-logo-url').value.trim();
+  const favicon = $('profile-favicon-url').value.trim();
+  
+  try {
+    const res = await apiPost('/api/white-label/settings', {
+      company_name: name,
+      primary_color: primary,
+      secondary_color: secondary,
+      company_logo_url: logo,
+      favicon_url: favicon
+    });
+    if (res.ok) {
+      const data = await res.json();
+      toast('Branding settings saved');
+      applyBranding(data.branding);
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to save branding', 'err');
+    }
+  } catch (err) {
+    toast('Error saving branding settings', 'err');
+  }
+}
+
+async function saveProfileKeys(e) {
+  e.preventDefault();
+  const gemini = $('profile-key-gemini').value.trim();
+  const lkUrl = $('profile-key-livekit-url').value.trim();
+  const lkKey = $('profile-key-livekit-key').value.trim();
+  const lkSec = $('profile-key-livekit-secret').value.trim();
+  
+  const settings = {};
+  if (gemini) settings["GOOGLE_API_KEY"] = gemini;
+  if (lkUrl) settings["LIVEKIT_URL"] = lkUrl;
+  if (lkKey) settings["LIVEKIT_API_KEY"] = lkKey;
+  if (lkSec) settings["LIVEKIT_API_SECRET"] = lkSec;
+  
+  try {
+    const res = await apiPost('/api/settings', { settings });
+    if (res.ok) {
+      toast('Gateway API credentials saved');
+      $('profile-key-gemini').value = '';
+      $('profile-key-livekit-secret').value = '';
+      loadProfileKeys();
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to save credentials', 'err');
+    }
+  } catch (err) {
+    toast('Error saving API keys', 'err');
+  }
+}
+
+async function loadOnboardingData() {
+  try {
+    const profile = await api('/api/profile');
+    
+    $('onboard-slug').textContent = profile.tenant_name ? profile.tenant_name.toLowerCase().replace(/\s+/g, '-') : '-';
+    $('onboard-status-badge').innerHTML = badge(profile.tenant_status);
+    $('onboard-billing-mode').textContent = profile.billing_mode;
+    $('onboard-created').textContent = fmtTs(profile.account_creation_date);
+    
+    const pricing = profile.pricing || {};
+    $('onboard-price-attempt').textContent = `Rs ${(pricing.price_per_call_attempt ?? 0.0).toFixed(2)}`;
+    $('onboard-price-appointment').textContent = `Rs ${(pricing.price_per_appointment ?? 0.0).toFixed(2)}`;
+    
+    // Support Info
+    const branding = profile.branding || {};
+    const supportEmail = branding.support_email || 'support@autonova.ai';
+    const websiteUrl = branding.website_url || 'https://autonova.ai';
+    
+    $('onboard-support-email').textContent = supportEmail;
+    $('onboard-support-email').href = `mailto:${supportEmail}`;
+    $('onboard-support-web').textContent = websiteUrl;
+    $('onboard-support-web').href = websiteUrl;
+    
+    // Wallet
+    $('onboard-wallet-balance').textContent = `Rs ${(profile.wallet_balance ?? 0.0).toFixed(2)}`;
+    
+    // Hide wallet section for BYOK tenants
+    if (profile.billing_mode === 'BYOK') {
+      $('onboard-wallet-card').style.display = 'none';
+    } else {
+      $('onboard-wallet-card').style.display = 'block';
+    }
+    
+    // Branding Form Inputs
+    $('onboard-brand-name').value = branding.company_name || '';
+    $('onboard-brand-primary').value = branding.primary_color || '#5B5BD6';
+    $('onboard-brand-primary-hex').value = branding.primary_color || '#5B5BD6';
+    $('onboard-brand-secondary').value = branding.secondary_color || '#00b894';
+    $('onboard-brand-secondary-hex').value = branding.secondary_color || '#00b894';
+    $('onboard-logo-url').value = branding.company_logo_url || '';
+    $('onboard-favicon-url').value = branding.favicon_url || '';
+    
+    // Keys Form Inputs
+    loadOnboardingKeys();
+  } catch (err) {
+    console.error('Failed to load onboarding data', err);
+    toast('Failed to load onboarding configurations', 'error');
+  }
+}
+
+async function saveOnboardBranding(e) {
+  e.preventDefault();
+  const name = $('onboard-brand-name').value.trim();
+  const primary = $('onboard-brand-primary-hex').value.trim();
+  const secondary = $('onboard-brand-secondary-hex').value.trim();
+  const logo = $('onboard-logo-url').value.trim();
+  const favicon = $('onboard-favicon-url').value.trim();
+  
+  try {
+    const res = await apiPost('/api/white-label/settings', {
+      company_name: name,
+      primary_color: primary,
+      secondary_color: secondary,
+      company_logo_url: logo,
+      favicon_url: favicon
+    });
+    if (res.ok) {
+      const data = await res.json();
+      toast('Branding settings saved');
+      applyBranding(data.branding);
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to save branding', 'err');
+    }
+  } catch (err) {
+    toast('Error saving branding settings', 'err');
+  }
+}
+
+async function saveOnboardKeys(e) {
+  e.preventDefault();
+  const gemini = $('onboard-key-gemini').value.trim();
+  const lkUrl = $('onboard-key-livekit-url').value.trim();
+  const lkKey = $('onboard-key-livekit-key').value.trim();
+  const lkSec = $('onboard-key-livekit-secret').value.trim();
+  
+  const settings = {};
+  if (gemini) settings["GOOGLE_API_KEY"] = gemini;
+  if (lkUrl) settings["LIVEKIT_URL"] = lkUrl;
+  if (lkKey) settings["LIVEKIT_API_KEY"] = lkKey;
+  if (lkSec) settings["LIVEKIT_API_SECRET"] = lkSec;
+  
+  try {
+    const res = await apiPost('/api/settings', { settings });
+    if (res.ok) {
+      toast('Gateway API credentials saved');
+      $('onboard-key-gemini').value = '';
+      $('onboard-key-livekit-secret').value = '';
+      loadOnboardingKeys();
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to save credentials', 'err');
+    }
+  } catch (err) {
+    toast('Error saving credentials', 'err');
+  }
+}
+
+async function addDemoCredits(e, inputId) {
+  e.preventDefault();
+  const input = $(inputId);
+  const amount = parseFloat(input.value || 0);
+  if (amount <= 0) {
+    toast('Please enter a valid amount', 'err');
+    return;
+  }
+  
+  try {
+    const res = await apiPost('/api/wallet/add', {
+      amount,
+      reason: "Tenant self-service demo top-up"
+    });
+    if (res.ok) {
+      toast(`Added Rs ${amount.toFixed(2)} to demo wallet`);
+      input.value = '';
+      if (document.body.classList.contains('onboarding-locked')) {
+        loadOnboardingData();
+      } else {
+        loadProfileData();
+      }
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Wallet adjustment failed', 'err');
+    }
+  } catch (err) {
+    toast('Network error adjusting wallet', 'err');
+  }
+}
+
+async function launchWorkspace() {
+  try {
+    const res = await apiPost('/api/onboard', {});
+    if (res.ok) {
+      toast('Workspace launched successfully! 🚀');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to launch workspace', 'err');
+    }
+  } catch (err) {
+    toast('Network error launching workspace', 'err');
+  }
+}
+
+async function handleLogoUpload(fileInput, targetInputId, statusSpanId) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const status = $(statusSpanId);
+  if (status) {
+    status.textContent = "Uploading...";
+    status.style.color = "var(--muted)";
+  }
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Upload failed");
+    }
+    const data = await res.json();
+    $(targetInputId).value = data.url;
+    if (status) {
+      status.textContent = "Uploaded!";
+      status.style.color = "var(--success)";
+    }
+  } catch (err) {
+    console.error(err);
+    if (status) {
+      status.textContent = err.message || "Upload failed";
+      status.style.color = "var(--danger)";
+    }
+  }
+}
 async function api(p,o){const r=await fetch(p,o);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||d.message||`Request failed (${r.status})`);return d}
 async function responseMessage(r){const d=await r.json().catch(()=>({}));return d.detail||d.message||d.status||`HTTP ${r.status}`}
 const apiPost=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
@@ -1120,7 +1994,7 @@ function openInboundTranscriptRoom(room) {
 }
 
 let _appInitialized=false;
-function initAppData(){if(_appInitialized)return;_appInitialized=true;applyIcons();renderActiveCalls();loadActiveCalls();loadStats();loadLiveConfig();loadRecentActivity();loadAgentProfiles();loadInboundData();scheduleLogsRefresh();setInterval(loadLiveConfig,30000);setInterval(loadActiveCalls,5000);setInterval(()=>{const active=document.querySelector('.tab-btn.active')?.dataset.tab;if(active==='stats'||active==='analytics'){loadStats();if(active==='stats')loadRecentActivity()}if(active==='inbound'){loadInboundData()}},10000)}document.addEventListener('DOMContentLoaded',()=>{$('admin-token-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')unlockDashboard($('auth-unlock-btn'))});bootstrapAuth()});
+function initAppData(){if(_appInitialized)return;_appInitialized=true;applyIcons();renderActiveCalls();loadActiveCalls();loadStats();loadLiveConfig();loadRecentActivity();loadAgentProfiles();loadInboundData();scheduleLogsRefresh();setInterval(loadLiveConfig,30000);setInterval(loadActiveCalls,5000);setInterval(()=>{const active=document.querySelector('.tab-btn.active')?.dataset.tab;if(active==='stats'||active==='analytics'){loadStats();if(active==='stats')loadRecentActivity()}if(active==='inbound'){loadInboundData()}},10000)}document.addEventListener('DOMContentLoaded',()=>{bootstrapAuth()});
 let simRoom=null,simAudioEl=null,simAudioTrack=null;async function startSimulatedCall(){try{toast('Starting simulated AI call...','info');const r=await fetch('/api/simulate-call',{method:'POST'}),d=await r.json();if(!r.ok){toast(d.detail||'Failed to start simulation','err');return}simRoom=new LivekitClient.Room();$('stop-sim-btn').disabled=false;await simRoom.connect(d.livekit_url,d.token);await simRoom.localParticipant.setMicrophoneEnabled(true);toast('Microphone connected','ok');simRoom.on('trackSubscribed',track=>{if(track.kind==='audio'){if(!simAudioEl){simAudioEl=document.createElement('audio');simAudioEl.autoplay=true;simAudioEl.controls=true;simAudioEl.playsInline=true;document.body.appendChild(simAudioEl)}simAudioTrack=track;track.attach(simAudioEl);simAudioEl.play().catch(()=>toast('Audio autoplay blocked','err'))}});simRoom.on('disconnected',()=>cleanupSimulatedCall('Simulation disconnected'))}catch(e){console.error(e);toast(e.message||'Simulation failed','err')}}async function stopSimulatedCall(){await cleanupSimulatedCall('Simulation stopped')}async function cleanupSimulatedCall(m){try{if(simRoom){try{await simRoom.localParticipant.setMicrophoneEnabled(false)}catch(e){}try{simRoom.disconnect()}catch(e){}}if(simAudioTrack&&simAudioEl)try{simAudioTrack.detach(simAudioEl)}catch(e){}if(simAudioEl){simAudioEl.pause();simAudioEl.remove();simAudioEl=null}}finally{simRoom=null;simAudioTrack=null;if($('stop-sim-btn'))$('stop-sim-btn').disabled=true;if(m)toast(m,'info')}}
 </script>
 </body>
