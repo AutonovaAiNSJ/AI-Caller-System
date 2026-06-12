@@ -564,19 +564,80 @@ async def entrypoint(ctx: agents.JobContext):
         from livekit.agents import RoomOptions as _RO
         _session_kwargs = dict(
             room=ctx.room,
-            agent=OutboundAssistant(instructions=""),
+            agent=OutboundAssistant(instructions=system_prompt),
             room_options=_RO(input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())),
         )
     else:
         _session_kwargs = dict(
             room=ctx.room,
-            agent=OutboundAssistant(instructions=""),
+            agent=OutboundAssistant(instructions=system_prompt),
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
 
     try:
         await session.start(**_session_kwargs)
         session_started = True
+        asyncio.create_task(_log("info", "TIMING LOG: session started"))
+        
+        # Comprehensive Investigation Logging
+        try:
+            active_inst = ""
+            if hasattr(session, "_activity") and session._activity is not None:
+                activity = session._activity
+                if hasattr(activity, "_rt_session") and activity._rt_session is not None:
+                    rt_session = activity._rt_session
+                    if hasattr(rt_session, "_opts") and rt_session._opts is not None:
+                        active_inst = getattr(rt_session._opts, "instructions", "")
+            
+            inst_str = str(active_inst) if active_inst is not None else ""
+            asyncio.create_task(_log("info", f"INVESTIGATION: instructions length={len(inst_str)}"))
+
+            def make_log_handler(event_name):
+                def handler(ev=None):
+                    try:
+                        detail_str = str(ev) if ev is not None else "no_data"
+                        if ev is not None:
+                            if hasattr(ev, "model_dump_json"):
+                                detail_str = ev.model_dump_json()
+                            elif hasattr(ev, "model_dump"):
+                                detail_str = str(ev.model_dump())
+                        asyncio.create_task(_log("info", f"INVESTIGATION EVENT (session): {event_name}", detail_str))
+                    except Exception as e:
+                        asyncio.create_task(_log("warning", f"INVESTIGATION EVENT LOG ERROR ({event_name}): {e}"))
+                return handler
+
+            for ev_type in ["user_state_changed", "agent_state_changed", "agent_false_interruption", 
+                            "overlapping_speech", "function_tools_executed", "metrics_collected", 
+                            "session_usage_updated", "speech_created", "error", "close"]:
+                session.on(ev_type, make_log_handler(ev_type))
+
+            if hasattr(session, "_activity") and session._activity is not None:
+                activity = session._activity
+                if hasattr(activity, "_rt_session") and activity._rt_session is not None:
+                    rt = activity._rt_session
+                    
+                    def make_rt_log_handler(event_name):
+                        def handler(ev=None):
+                            try:
+                                detail_str = str(ev) if ev is not None else "no_data"
+                                if ev is not None:
+                                    if hasattr(ev, "model_dump_json"):
+                                        detail_str = ev.model_dump_json()
+                                    elif hasattr(ev, "model_dump"):
+                                        detail_str = str(ev.model_dump())
+                                asyncio.create_task(_log("info", f"INVESTIGATION EVENT (rt_session): {event_name}", detail_str))
+                            except Exception as e:
+                                asyncio.create_task(_log("warning", f"INVESTIGATION EVENT LOG ERROR ({event_name}): {e}"))
+                        return handler
+
+                    for ev_type in ["generation_created", "input_speech_started", "input_speech_stopped", 
+                                    "metrics_collected", "remote_item_added", "error", "input_audio_transcription_completed"]:
+                        rt.on(ev_type, make_rt_log_handler(ev_type))
+                        
+            asyncio.create_task(_log("info", "INVESTIGATION: Registered all trace event handlers successfully"))
+        except Exception as inv_exc:
+            asyncio.create_task(_log("warning", f"INVESTIGATION: Registration failed: {inv_exc}", traceback.format_exc()))
+            
     except Exception as exc:
         await _log_exception("AI session start failed", exc, "error")
         await _fallback_call_log(
@@ -586,14 +647,24 @@ async def entrypoint(ctx: agents.JobContext):
         )
         ctx.shutdown()
         return
-    await asyncio.sleep(2)
-    # await asyncio.sleep(2)
+    _logged_first_token = False
+    _logged_first_audio = False
 
-    # await session.say(
-    #     greeting,
-    #     allow_interruptions=True
-    # )
-    await _log("info", "Gemini session started")
+    async def speak_greeting():
+        await asyncio.sleep(0.5)
+        greeting_text = (
+            f"Hi, am I speaking with {lead_name}?"
+            if phone_number else
+            "Hello, how can I help you today?"
+        )
+        try:
+            session.generate_reply(user_input=greeting_text)
+            asyncio.create_task(_log("info", f"Greeting spoken: {greeting_text}"))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("Initial greeting failed", exc, "warning"))
+
+    asyncio.create_task(speak_greeting())
+    asyncio.create_task(_log("info", "Gemini session started"))
 
     def _on_user_input_transcribed(ev) -> None:
         try:
@@ -608,11 +679,15 @@ async def entrypoint(ctx: agents.JobContext):
             asyncio.create_task(_log_exception("User transcript handler error", exc, "warning"))
 
     def _on_conversation_item_added(ev) -> None:
+        nonlocal _logged_first_token
         try:
             item = getattr(ev, "item", None)
             role = getattr(item, "role", None)
             if role != "assistant":
                 return
+            if not _logged_first_token:
+                _logged_first_token = True
+                asyncio.create_task(_log("info", "TIMING LOG: first AI token received"))
             text = getattr(item, "text_content", None) or ""
             if not text.strip():
                 return
@@ -621,9 +696,20 @@ async def entrypoint(ctx: agents.JobContext):
         except Exception as exc:
             asyncio.create_task(_log_exception("AI transcript handler error", exc, "warning"))
 
+    def _on_agent_state_changed(state) -> None:
+        nonlocal _logged_first_audio
+        try:
+            if str(state) == "speaking" or getattr(state, "value", "") == "speaking":
+                if not _logged_first_audio:
+                    _logged_first_audio = True
+                    asyncio.create_task(_log("info", "TIMING LOG: first AI audio generated"))
+        except Exception as exc:
+            asyncio.create_task(_log_exception("Agent state changed handler error", exc, "warning"))
+
     try:
         session.on("user_input_transcribed", _on_user_input_transcribed)
         session.on("conversation_item_added", _on_conversation_item_added)
+        session.on("agent_state_changed", _on_agent_state_changed)
     except Exception as exc:
         await _log_exception("Failed to register session handlers", exc, "warning")
 

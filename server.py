@@ -206,7 +206,7 @@ def _valid_e164(value: str) -> bool:
 @app.middleware("http")
 async def admin_auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path in ("/api/health", "/ui/login.html", "/ui/signup.html", "/api/auth/config", "/api/auth/register"):
+    if path in ("/api/health", "/ui/login.html", "/ui/signup.html", "/api/auth/config", "/api/auth/register", "/api/simulate-call"):
         return await call_next(request)
 
     is_protected_page = path in ("/", "/ui/index.html", "/ui/admin.html")
@@ -378,8 +378,8 @@ def livekit_client_session() -> aiohttp.ClientSession:
 class CallRequest(BaseModel):
     phone: str
     lead_name: str = "there"
-    business_name: str = "our company"
-    service_type: str = "our service"
+    business_name: Optional[str] = None
+    service_type: Optional[str] = None
     system_prompt: Optional[str] = None
     agent_profile_id: Optional[str] = None
 
@@ -389,8 +389,8 @@ class InboundDispatchRequest(BaseModel):
     phone: Optional[str] = None
     participant_identity: Optional[str] = None
     lead_name: str = "there"
-    business_name: str = "our company"
-    service_type: str = "our service"
+    business_name: Optional[str] = None
+    service_type: Optional[str] = None
     system_prompt: Optional[str] = None
     agent_profile_id: Optional[str] = None
 
@@ -894,12 +894,20 @@ async def api_dispatch_call(req: CallRequest):
         effective_prompt = await get_setting("system_prompt", "") or None
         prompt_source = "global" if effective_prompt else "default"
 
+    branding = await get_tenant_branding()
+    biz_name = req.business_name
+    if not biz_name or biz_name == "our company":
+        biz_name = branding.get("default_business_name") or branding.get("company_name") or "our company"
+    svc_type = req.service_type
+    if not svc_type or svc_type == "our service":
+        svc_type = branding.get("default_service_type") or "our service"
+
     room_name = f"call-{phone.replace('+', '')}-{random.randint(1000, 9999)}"
     metadata: dict = {
         "phone_number": phone,
         "lead_name":    req.lead_name,
-        "business_name": req.business_name,
-        "service_type":  req.service_type,
+        "business_name": biz_name,
+        "service_type":  svc_type,
         "system_prompt": effective_prompt,
         "agent_profile_id": profile.get("id") if profile_source in ("selected", "default") else req.agent_profile_id,
         "agent_profile_name": profile_name,
@@ -1046,11 +1054,19 @@ async def api_dispatch_inbound(req: InboundDispatchRequest):
         effective_prompt = await get_setting("system_prompt", "") or None
         prompt_source = "global" if effective_prompt else "default"
 
+    branding = await get_tenant_branding()
+    biz_name = req.business_name
+    if not biz_name or biz_name == "our company":
+        biz_name = branding.get("default_business_name") or branding.get("company_name") or "our company"
+    svc_type = req.service_type
+    if not svc_type or svc_type == "our service":
+        svc_type = branding.get("default_service_type") or "our service"
+
     metadata: dict = {
         "phone_number": phone,
         "lead_name": req.lead_name,
-        "business_name": req.business_name,
-        "service_type": req.service_type,
+        "business_name": biz_name,
+        "service_type": svc_type,
         "system_prompt": effective_prompt,
         "agent_profile_id": profile.get("id") if profile_source in ("selected", "default") else req.agent_profile_id,
         "agent_profile_name": profile_name,
@@ -1472,11 +1488,19 @@ async def _dispatch_one(lk, lk_api, contact: dict, room_name: str,
         if not profile:
             profile = await get_default_agent_profile()
             profile_source = "default" if profile else "built_in_fallback"
+        branding = await get_tenant_branding()
+        biz_name = contact.get("business_name")
+        if not biz_name or biz_name == "our company":
+            biz_name = branding.get("default_business_name") or branding.get("company_name") or "our company"
+        svc_type = contact.get("service_type")
+        if not svc_type or svc_type == "our service":
+            svc_type = branding.get("default_service_type") or "our service"
+
         metadata: dict = {
             "phone_number":  contact["phone"],
             "lead_name":     contact.get("lead_name", "there"),
-            "business_name": contact.get("business_name", "our company"),
-            "service_type":  contact.get("service_type", "our service"),
+            "business_name": biz_name,
+            "service_type":  svc_type,
             "system_prompt": saved_prompt,
             "agent_profile_id": profile.get("id") if profile else None,
             "agent_profile_name": profile.get("name") if profile else None,

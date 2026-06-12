@@ -292,6 +292,7 @@ async def get_all_settings() -> dict:
         "CALCOM_API_KEY", "CALCOM_EVENT_TYPE_ID", "CALCOM_TIMEZONE",
         "GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "GOOGLE_CALENDAR_ID", "GOOGLE_CALENDAR_SLOT_DURATION",
         "ENABLED_TOOLS",
+        "DEFAULT_BUSINESS_NAME", "DEFAULT_SERVICE_TYPE",
         "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_DISPLAY_NAME",
     ]
     out: dict = {}
@@ -1128,6 +1129,19 @@ async def get_tenant_branding(tenant_id: Optional[str] = None) -> dict:
     resolved_logo = company_logo_file if company_logo_file else (company_logo_url if company_logo_url else defaults["company_logo"])
     resolved_favicon = favicon_file if favicon_file else (favicon_url if favicon_url else defaults["favicon"])
     
+    # Retrieve default_business_name and default_service_type with proper context wrapping
+    curr = _current_tenant_id.get()
+    target = tenant.get("id") or tenant_id or curr
+    tokens = None
+    if target and target != curr:
+        tokens = set_request_context(target, "", "TENANT_ADMIN")
+    try:
+        default_biz = await get_setting("DEFAULT_BUSINESS_NAME", "")
+        default_svc = await get_setting("DEFAULT_SERVICE_TYPE", "")
+    finally:
+        if tokens:
+            reset_request_context(tokens)
+
     res = {}
     for k in keys:
         val = tenant.get(k)
@@ -1141,6 +1155,8 @@ async def get_tenant_branding(tenant_id: Optional[str] = None) -> dict:
     res["company_logo_url"] = company_logo_url
     res["favicon_file"] = favicon_file
     res["favicon_url"] = favicon_url
+    res["default_business_name"] = default_biz
+    res["default_service_type"] = default_svc
     return res
 
 async def add_wallet_credits(tenant_id: str, amount: float, user_email: str = "", reason: str = "") -> dict:

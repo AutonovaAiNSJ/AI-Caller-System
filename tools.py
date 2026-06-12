@@ -594,9 +594,18 @@ class AppointmentTools(llm.ToolContext):
         if not phone:
             return "Phone number missing; ask the caller to confirm their number."
         try:
-            calls = await get_calls_by_phone(phone)
-            appointments = await get_appointments_by_phone(phone)
-            memories = await get_contact_memory(phone)
+            logger.info("TIMING LOG: lookup_contact started")
+            await log_error("tools", "TIMING LOG: lookup_contact started", "", "info")
+            
+            calls, appointments, memories = await asyncio.gather(
+                get_calls_by_phone(phone),
+                get_appointments_by_phone(phone),
+                get_contact_memory(phone)
+            )
+            
+            logger.info("TIMING LOG: lookup_contact finished")
+            await log_error("tools", "TIMING LOG: lookup_contact finished", "", "info")
+            
             if not calls and not appointments and not memories:
                 return f"No history for {phone}. First-time contact."
             lines = [f"Contact history for {phone}:"]
@@ -615,6 +624,8 @@ class AppointmentTools(llm.ToolContext):
                     lines.append(f"  • {a.get('date')} {a.get('time')} — {a.get('service')} [{a.get('status')}]")
             return "\n".join(lines)
         except Exception:
+            logger.info("TIMING LOG: lookup_contact finished (with error)")
+            await log_error("tools", "TIMING LOG: lookup_contact finished (with error)", "", "info")
             return "Unable to retrieve contact history."
 
     @llm.function_tool

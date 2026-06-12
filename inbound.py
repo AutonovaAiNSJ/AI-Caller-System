@@ -347,13 +347,13 @@ async def entrypoint(ctx: agents.JobContext):
 
         _session_kwargs = dict(
             room=ctx.room,
-            agent=InboundAssistant(instructions=""),
+            agent=InboundAssistant(instructions=system_prompt),
             room_options=_RO(input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony())),
         )
     else:
         _session_kwargs = dict(
             room=ctx.room,
-            agent=InboundAssistant(instructions=""),
+            agent=InboundAssistant(instructions=system_prompt),
             room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVCTelephony()),
         )
 
