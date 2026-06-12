@@ -294,6 +294,9 @@ async def get_all_settings() -> dict:
         "ENABLED_TOOLS",
         "DEFAULT_BUSINESS_NAME", "DEFAULT_SERVICE_TYPE",
         "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_DISPLAY_NAME",
+        "AUTO_SEND_BOOKING_EMAIL",
+        "BOOKING_EMAIL_SUBJECT_TEMPLATE", "BOOKING_EMAIL_BODY_TEMPLATE",
+        "BOOKING_EMAIL_REPLY_TO", "BOOKING_EMAIL_SIGNATURE",
     ]
     out: dict = {}
     for k in KNOWN_KEYS:
@@ -318,7 +321,7 @@ async def save_settings(data: dict) -> None:
     rows = [
         _with_tenant({"key": k, "value": str(v), "updated_at": updated_at})
         for k, v in data.items()
-        if v is not None and v != ""
+        if v is not None
     ]
     if rows:
         try:

@@ -113,6 +113,19 @@ async def _request_authenticated(request: Request) -> bool:
     return user_record.get("role", "").strip().upper() == "SUPER_ADMIN"
 
 
+async def _request_active_user(request: Request) -> Optional[dict]:
+    token = _extract_access_token(request)
+    if not token:
+        return None
+    user_info = await _verify_supabase_token(token)
+    if not user_info:
+        return None
+    user_record = await get_user_by_email(user_info.get("email"))
+    if not user_record or not user_record.get("is_active"):
+        return None
+    return user_record
+
+
 @app.get("/ui/admin.html", response_class=HTMLResponse)
 async def serve_admin_page(request: Request):
     if get_current_user_role() != "SUPER_ADMIN":
@@ -410,6 +423,10 @@ class PromptRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     settings: dict
+
+
+class TestBookingEmailRequest(BaseModel):
+    recipient_email: str
 
 
 class NotesRequest(BaseModel):
@@ -1245,34 +1262,46 @@ async def api_get_stats():
 
 @app.get("/api/health")
 async def api_health(request: Request):
-    if not await _request_authenticated(request):
+    user_record = await _request_active_user(request)
+    if not user_record:
         return {"status": "ok"}
     services = {
-        "supabase": False,
-        "livekit": False,
-        "gemini": False,
-        "sip": False,
+        "supabase": {"state": "missing", "label": "Missing"},
+        "livekit": {"state": "missing", "label": "Missing"},
+        "gemini": {"state": "missing", "label": "Missing"},
+        "sip": {"state": "missing", "label": "Missing"},
     }
     try:
         await get_all_settings()
-        services["supabase"] = True
+        services["supabase"] = {"state": "healthy", "label": "Healthy"}
         logger.info("[health] supabase ok")
     except Exception as exc:
+        services["supabase"] = {"state": "failed", "label": "Failed"}
         logger.warning("[health] supabase failed: %s", exc)
 
-    services["livekit"] = bool(
+    livekit_configured = bool(
         await eff("LIVEKIT_URL")
         and await eff("LIVEKIT_API_KEY")
         and await eff("LIVEKIT_API_SECRET")
     )
-    services["gemini"] = bool(await eff("GOOGLE_API_KEY"))
-    services["sip"] = bool(
+    gemini_configured = bool(await eff("GOOGLE_API_KEY"))
+    sip_configured = bool(
         await eff("VOBIZ_SIP_DOMAIN")
         and await eff("VOBIZ_USERNAME")
         and await eff("VOBIZ_PASSWORD")
         and await eff("VOBIZ_OUTBOUND_NUMBER")
     )
-    return {"status": "ok", "services": services}
+    if livekit_configured:
+        services["livekit"] = {"state": "configured", "label": "Configured but unverified"}
+    if gemini_configured:
+        services["gemini"] = {"state": "configured", "label": "Configured but unverified"}
+    if sip_configured:
+        services["sip"] = {"state": "configured", "label": "Configured but unverified"}
+    return {
+        "status": "ok",
+        "role": (user_record.get("role") or "").strip().upper(),
+        "services": services,
+    }
 
 
 # ── Appointments ──────────────────────────────────────────────────────────────
@@ -1320,7 +1349,11 @@ async def api_get_settings():
 
 @app.post("/api/settings")
 async def api_save_settings(req: SettingsRequest):
-    filtered = {k: v for k, v in req.settings.items() if v is not None and v != ""}
+    clearable_settings = {"BOOKING_EMAIL_REPLY_TO", "BOOKING_EMAIL_SIGNATURE"}
+    filtered = {
+        k: v for k, v in req.settings.items()
+        if v is not None and (v != "" or k in clearable_settings)
+    }
     filtered.pop("ADMIN_TOKEN", None)
     if "DEFAULT_TRANSFER_NUMBER" in filtered and not _valid_e164(str(filtered["DEFAULT_TRANSFER_NUMBER"])):
         raise HTTPException(400, "Transfer number must be in E.164 format, for example +919876543210")
@@ -1331,6 +1364,31 @@ async def api_save_settings(req: SettingsRequest):
         for k, v in filtered.items():
             os.environ[k] = str(v)
     return {"status": "saved", "count": len(filtered)}
+
+
+@app.post("/api/email-booking/test")
+async def api_test_booking_email(req: TestBookingEmailRequest):
+    recipient = (req.recipient_email or "").strip()
+    if "@" not in recipient:
+        raise HTTPException(400, "Valid recipient email is required")
+    from email_manager import render_booking_email, send_email_async
+    sample = {
+        "lead_name": "Test Lead",
+        "business_name": await eff("DEFAULT_BUSINESS_NAME") or "OutboundAI",
+        "service_type": await eff("DEFAULT_SERVICE_TYPE") or "Demo",
+        "date": "2026-06-15",
+        "time": "10:00",
+        "phone": "+910000000000",
+        "email": recipient,
+        "booking_id": "TEST1234",
+        "calendar_link": "https://calendar.google.com/example",
+    }
+    subject, body, reply_to = await render_booking_email(sample)
+    ok = await send_email_async(recipient, subject, body, booking_id="TEST1234", reply_to=reply_to)
+    if not ok:
+        raise HTTPException(400, "Test email failed. Check SMTP settings and logs.")
+    await audit_log("Booking Email Test Sent", get_current_tenant_id(), {"recipient": recipient}, get_current_user_email())
+    return {"status": "sent"}
 
 
 # Removed api_change_admin_token endpoint

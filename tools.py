@@ -101,6 +101,13 @@ async def _log(msg: str, detail: str = "", level: str = "info") -> None:
         pass
 
 
+def _redact_email(email: str) -> str:
+    if not email or "@" not in email:
+        return "[missing]"
+    local, domain = email.split("@", 1)
+    return f"{local[:1]}***@{domain}" if local else f"*@{domain}"
+
+
 class AppointmentTools(llm.ToolContext):
     """All function tools available to the appointment-booking agent."""
 
@@ -171,6 +178,16 @@ class AppointmentTools(llm.ToolContext):
             self._enabled_tools_cache = await get_enabled_tools()
         return self._enabled_tools_cache
 
+    async def _smtp_configured(self) -> bool:
+        values = await asyncio.gather(
+            self._get_setting_cached("SMTP_HOST", ""),
+            self._get_setting_cached("SMTP_PORT", ""),
+            self._get_setting_cached("SMTP_USERNAME", ""),
+            self._get_setting_cached("SMTP_PASSWORD", ""),
+            self._get_setting_cached("SMTP_FROM", ""),
+        )
+        return all(bool(v) for v in values)
+
     def _get_gcal_manager(self, gcal_json: str, gcal_id: str) -> Optional[GoogleCalendarManager]:
         if not gcal_json:
             return None
@@ -231,6 +248,20 @@ class AppointmentTools(llm.ToolContext):
             "source": source,
             "cached_at": time_module.time(),
         }
+
+    def _booking_confirmation_text(
+        self,
+        booking_id: str,
+        date: str,
+        slot_time: str,
+        service: str,
+        email_status: str,
+        calendar_status: str = "created",
+    ) -> str:
+        return (
+            f"Confirmed! Booking ID: {booking_id}. See you on {date} at {slot_time} "
+            f"for {service}. email_status={email_status}; calendar_status={calendar_status}."
+        )
 
     def build_tool_list(self, enabled: list) -> list:
         """Return tool methods for the final resolved tool-name list."""
@@ -484,26 +515,61 @@ class AppointmentTools(llm.ToolContext):
             except Exception as billing_exc:
                 await _log("Appointment billing deduction failed (non-fatal)", str(billing_exc), "warning")
 
-            
-            # Send confirmation email if tool is enabled
+            email_status = "not_enabled"
+            auto_email_raw = await self._get_setting_cached("AUTO_SEND_BOOKING_EMAIL", "false")
+            auto_email_enabled = str(auto_email_raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+            # Optional automatic booking email is controlled by AUTO_SEND_BOOKING_EMAIL.
+            # Fire-and-forget email can only be reported as queued here; sent/failed is logged by email_manager.
             t0 = time_module.perf_counter()
-            enabled = await self._get_enabled_tools_cached()
-            spans["email_tool_check_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
-            if enabled and "send_email" in enabled:
-                subject = f"Appointment Confirmed: {service} on {date} at {time}"
-                body = (
-                    f"Hello {name},\n\n"
-                    f"Your appointment for {service} has been successfully scheduled.\n\n"
-                    f"Details:\n"
-                    f"- Date: {date}\n"
-                    f"- Time: {time}\n"
-                    f"- Booking ID: {booking_id}\n\n"
-                    f"If you need to reschedule or cancel, please contact us.\n\n"
-                    f"Best regards,\n"
-                    f"AI Assistant"
+            if auto_email_enabled:
+                if not email:
+                    email_status = "no_recipient"
+                elif not await self._smtp_configured():
+                    email_status = "not_configured"
+                else:
+                    email_status = "queued"
+            spans["email_config_check_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
+            if auto_email_enabled and email_status != "queued":
+                await log_error(
+                    "email",
+                    "Booking confirmation email not queued",
+                    f"booking_id={booking_id} recipient={_redact_email(email)} email_status={email_status}",
+                    "warning" if email_status == "not_configured" else "info",
                 )
-                from email_manager import send_email_async
-                asyncio.create_task(send_email_async(email, subject, body))
+
+            async def queue_booking_email(calendar_link: str = "") -> None:
+                nonlocal email_status
+                if email_status != "queued":
+                    return
+                try:
+                    from email_manager import render_booking_email, send_email_async
+                    subject, body, reply_to = await render_booking_email({
+                        "lead_name": name,
+                        "business_name": self.business_name or "",
+                        "service_type": service,
+                        "date": date,
+                        "time": time,
+                        "phone": phone,
+                        "email": email,
+                        "booking_id": booking_id,
+                        "calendar_link": calendar_link or "",
+                    })
+                    await log_error(
+                        "email",
+                        "Booking confirmation email queued",
+                        f"booking_id={booking_id} recipient={_redact_email(email)} email_status=queued",
+                        "info",
+                    )
+                    asyncio.create_task(send_email_async(email, subject, body, booking_id=booking_id, reply_to=reply_to))
+                except Exception as email_exc:
+                    email_status = "failed"
+                    await log_error(
+                        "email",
+                        "Booking confirmation email queue failed",
+                        f"booking_id={booking_id} recipient={_redact_email(email)} email_status=failed error={email_exc}",
+                        "error",
+                    )
 
             # Force end_call execution (Issue 3)
             async def force_end_call_safety():
@@ -519,6 +585,8 @@ class AppointmentTools(llm.ToolContext):
                             await asyncio.sleep(2.0)
             asyncio.create_task(force_end_call_safety())
 
+            event_link = ""
+            calendar_status = "not_configured"
             if manager:
                 try:
                     await _log("Google Calendar sync started", f"booking_id={booking_id} calendar_id={gcal_id}", "info")
@@ -543,6 +611,7 @@ class AppointmentTools(llm.ToolContext):
                         f"booking_id={booking_id} event_id={event_id or ''}; timing={spans}",
                         "info",
                     )
+                    calendar_status = "created"
                 except asyncio.TimeoutError:
                     self._booking_error = "Google Calendar sync timed out"
                     spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
@@ -551,9 +620,11 @@ class AppointmentTools(llm.ToolContext):
                         f"booking_id={booking_id}; timing={spans}",
                         "warning",
                     )
+                    await queue_booking_email("")
                     return (
-                        f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} "
-                        f"for {service}. Calendar sync is pending."
+                        self._booking_confirmation_text(
+                            booking_id, date, time, service, email_status, "pending"
+                        )
                     )
                 except Exception as exc:
                     self._booking_error = f"Google Calendar sync failed: {exc}"
@@ -563,15 +634,18 @@ class AppointmentTools(llm.ToolContext):
                         f"booking_id={booking_id} error={exc}; timing={spans}",
                         "error",
                     )
+                    await queue_booking_email("")
                     return (
-                        f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} "
-                        f"for {service}. Calendar sync is pending."
+                        self._booking_confirmation_text(
+                            booking_id, date, time, service, email_status, "pending"
+                        )
                     )
             else:
                 await _log("Google Calendar sync skipped", "Google Calendar is not configured; Supabase booking only", "info")
             spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
-            await _log("Appointment booking completed", f"booking_id={booking_id}; timing={spans}", "info")
-            return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
+            await queue_booking_email(event_link or "")
+            await _log("Appointment booking completed", f"booking_id={booking_id} email_status={email_status}; timing={spans}", "info")
+            return self._booking_confirmation_text(booking_id, date, time, service, email_status, calendar_status)
         except Exception as exc:
             self._booking_confirmed = False
             await _log("Appointment booking failed", str(exc), "error")
@@ -958,11 +1032,11 @@ class AppointmentTools(llm.ToolContext):
         recipient_email: lead's email address | subject: email subject | body: email body text
         """
         enabled = await get_enabled_tools()
-        if not enabled or "send_email" not in enabled:
+        if enabled is not None and "send_email" not in enabled:
             return "Email skipped: send_email tool is currently disabled in system settings."
         from email_manager import send_email_async
         success = await send_email_async(recipient_email, subject, body)
         if success:
-            return f"Email sent successfully to {recipient_email}."
+            return "Email sent successfully."
         else:
-            return "Email failed to send. Please check SMTP configuration."
+            return "Email sending failed. Please check SMTP configuration."
