@@ -34,6 +34,7 @@ from tools import AppointmentTools, DEFAULT_TOOL_NAMES, MANDATORY_BOOKING_TOOLS
 load_dotenv(".env", override=False)  # VPS env vars always win — .env only for local dev
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("outbound-agent")
+DEBUG_LIVEKIT_EVENTS = os.getenv("DEBUG_LIVEKIT_EVENTS", "").lower() in ("1", "true", "yes")
 
 SIP_DOMAIN = os.getenv("VOBIZ_SIP_DOMAIN", "")
 
@@ -67,7 +68,10 @@ async def _log(level: str, msg: str, detail: str = "") -> None:
     elif level == "warning": logger.warning(msg)
     else:                    logger.error(msg)
     try:
-        await log_error("agent", msg, detail, level)
+        if level == "info":
+            asyncio.create_task(log_error("agent", msg, detail, level))
+        else:
+            await log_error("agent", msg, detail, level)
     except Exception:
         logger.exception("Failed to persist log entry")
 
@@ -416,15 +420,15 @@ async def entrypoint(ctx: agents.JobContext):
             f"prompt_preview={_safe_preview(system_prompt)}"
         ),
     )
-    # Prompt Observability structured JSON logging
-    prompt_obs_detail = json.dumps({
-        "business_name": business_name,
-        "service_type": service_type,
-        "final_prompt_preview": system_prompt[:1000],
-        "resolved_tools": enabled_tools,
-        "full_prompt": system_prompt
-    }, indent=2)
-    await _log("info", f"Prompt Observability: business={business_name}, service={service_type}", prompt_obs_detail)
+    if DEBUG_LIVEKIT_EVENTS:
+        prompt_obs_detail = json.dumps({
+            "business_name": business_name,
+            "service_type": service_type,
+            "final_prompt_preview": system_prompt[:1000],
+            "resolved_tools": enabled_tools,
+            "full_prompt": system_prompt,
+        }, indent=2)
+        await _log("info", f"Prompt Observability: business={business_name}, service={service_type}", prompt_obs_detail)
     await _log("info", "Mandatory tool contract appended", f"room={ctx.room.name}")
 
     async def _persist_transcript(speaker: str, text: str) -> None:
@@ -432,7 +436,8 @@ async def entrypoint(ctx: agents.JobContext):
         try:
             await save_transcript(ctx.room.name, speaker, text)
             transcript_saved = True
-            await _log("info", "Transcript saved", f"{speaker}: {text[:160]}")
+            if DEBUG_LIVEKIT_EVENTS:
+                await _log("info", "Transcript saved", f"{speaker}: {text[:160]}")
         except Exception as exc:
             await _log_exception("Transcript save failed", exc, "warning")
 
@@ -498,6 +503,29 @@ async def entrypoint(ctx: agents.JobContext):
 
     await _log("info", f"AI agent connected: room={ctx.room.name}")
 
+    # Prebuild tools and Gemini session before SIP answer. session.start() stays
+    # after pickup so the agent cannot speak into an unanswered room.
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    prebuild_start = time.perf_counter()
+    await _log("info", f"TIMING LOG: session prebuild started model={gemini_model}")
+    active_tools = tool_ctx.build_tool_list(enabled_tools)
+    loaded_tool_names = [t.__name__ for t in active_tools]
+    await _log("info", f"Tools loaded: {loaded_tool_names}")
+    if loaded_tool_names != enabled_tools:
+        await _log("warning", "Resolved tool names differ from loaded tools", f"resolved={enabled_tools}; loaded={loaded_tool_names}")
+    try:
+        session = _build_session(tools=active_tools, system_prompt=system_prompt)
+        await _log("info", f"TIMING LOG: session prebuild done elapsed_ms={round((time.perf_counter() - prebuild_start) * 1000, 1)}")
+    except Exception as exc:
+        await _log_exception("AI session build failed", exc, "error")
+        await _fallback_call_log(
+            "disconnected" if call_answered else "no_answer",
+            "session build failed before end_call",
+            f"error={exc}",
+        )
+        ctx.shutdown()
+        return
+
     # ── Dial — MUST come before session.start() (Rule 1) ────────────────────
     if phone_number:
         trunk_id = os.getenv("OUTBOUND_TRUNK_ID")
@@ -521,7 +549,7 @@ async def entrypoint(ctx: agents.JobContext):
                     f"Call ANSWERED — {phone_number} picked up, starting AI session now"
                 )
                 call_answered = True
-                await tool_ctx.mark_connected()
+                asyncio.create_task(tool_ctx.mark_connected())
 
             except Exception as exc:
                 await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
@@ -538,26 +566,11 @@ async def entrypoint(ctx: agents.JobContext):
                 "warning",
                 "No SIP trunk configured — running in local/browser mode"
             )
-            await tool_ctx.mark_connected()
-    # ── Build and start Gemini Live ──────────────────────────────────────────
+            asyncio.create_task(tool_ctx.mark_connected())
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+    # ── Build and start Gemini Live ──────────────────────────────────────────
     await _log("info", f"Building AI session — model={gemini_model}")
-    active_tools = tool_ctx.build_tool_list(enabled_tools)
-    loaded_tool_names = [t.__name__ for t in active_tools]
-    await _log("info", f"Tools loaded: {loaded_tool_names}")
-    if loaded_tool_names != enabled_tools:
-        await _log("warning", "Resolved tool names differ from loaded tools", f"resolved={enabled_tools}; loaded={loaded_tool_names}")
-    try:
-        session = _build_session(tools=active_tools, system_prompt=system_prompt)
-    except Exception as exc:
-        await _log_exception("AI session build failed", exc, "error")
-        await _fallback_call_log(
-            "disconnected" if call_answered else "no_answer",
-            "session build failed before end_call",
-            f"error={exc}",
-        )
-        ctx.shutdown()
-        return
+    await _log("info", "TIMING LOG: session start begin")
 
     # Never use close_on_disconnect=True with SIP (Rule 2)
     if _HAS_ROOM_OPTIONS:
@@ -575,12 +588,14 @@ async def entrypoint(ctx: agents.JobContext):
         )
 
     try:
+        session_start = time.perf_counter()
         await session.start(**_session_kwargs)
         session_started = True
-        asyncio.create_task(_log("info", "TIMING LOG: session started"))
+        asyncio.create_task(_log("info", f"TIMING LOG: session started elapsed_ms={round((time.perf_counter() - session_start) * 1000, 1)}"))
         
         # Comprehensive Investigation Logging
-        try:
+        if DEBUG_LIVEKIT_EVENTS:
+          try:
             active_inst = ""
             if hasattr(session, "_activity") and session._activity is not None:
                 activity = session._activity
@@ -635,7 +650,7 @@ async def entrypoint(ctx: agents.JobContext):
                         rt.on(ev_type, make_rt_log_handler(ev_type))
                         
             asyncio.create_task(_log("info", "INVESTIGATION: Registered all trace event handlers successfully"))
-        except Exception as inv_exc:
+          except Exception as inv_exc:
             asyncio.create_task(_log("warning", f"INVESTIGATION: Registration failed: {inv_exc}", traceback.format_exc()))
             
     except Exception as exc:
@@ -651,13 +666,14 @@ async def entrypoint(ctx: agents.JobContext):
     _logged_first_audio = False
 
     async def speak_greeting():
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.05)
         greeting_text = (
             f"Hi, am I speaking with {lead_name}?"
             if phone_number else
             "Hello, how can I help you today?"
         )
         try:
+            asyncio.create_task(_log("info", "TIMING LOG: greeting generation requested"))
             session.generate_reply(user_input=greeting_text)
             asyncio.create_task(_log("info", f"Greeting spoken: {greeting_text}"))
         except Exception as exc:

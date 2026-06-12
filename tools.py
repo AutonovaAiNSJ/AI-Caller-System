@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-import time
+import time as time_module
 import functools
 import traceback
 from datetime import datetime
@@ -19,6 +19,10 @@ from db import (
 from gcal import GoogleCalendarManager
 
 logger = logging.getLogger("appointment-tools")
+DEBUG_TOOL_LOGS = os.getenv("DEBUG_TOOL_LOGS", "").lower() in ("1", "true", "yes")
+GCAL_AVAILABILITY_TIMEOUT_SECONDS = float(os.getenv("GCAL_AVAILABILITY_TIMEOUT_SECONDS", "2.5"))
+GCAL_EVENT_TIMEOUT_SECONDS = float(os.getenv("GCAL_EVENT_TIMEOUT_SECONDS", "4.0"))
+AVAILABILITY_CACHE_TTL_SECONDS = float(os.getenv("AVAILABILITY_CACHE_TTL_SECONDS", "180"))
 
 
 MANDATORY_BOOKING_TOOLS = ["check_availability", "book_appointment", "end_call"]
@@ -34,25 +38,35 @@ def log_tool_execution(func):
     @functools.wraps(func)
     async def wrapper(self, *args, **kwargs):
         tool_name = func.__name__
-        args_str = f"args={args}, kwargs={kwargs}"
-        start_time = time.time()
+        start_time = time_module.time()
         try:
             result = await func(self, *args, **kwargs)
-            duration = time.time() - start_time
-            await log_error(
+            duration = time_module.time() - start_time
+            summary = f"tool={tool_name} status=success duration={duration:.3f}s"
+            if tool_name == "book_appointment" and getattr(self, "_booking_id", None):
+                summary += f" booking_id={self._booking_id}"
+            logger.info(summary)
+            asyncio.create_task(log_error(
                 source="tools",
-                message=f"Tool '{tool_name}' executed successfully",
-                detail=f"Duration: {duration:.3f}s\nArguments: {args_str}\nResult: {result}",
+                message="Tool execution completed",
+                detail=summary,
                 level="info"
-            )
+            ))
+            if DEBUG_TOOL_LOGS:
+                asyncio.create_task(log_error(
+                    source="tools",
+                    message=f"Tool '{tool_name}' debug payload",
+                    detail=f"Duration: {duration:.3f}s\nArguments: args={args}, kwargs={kwargs}\nResult: {result}",
+                    level="info"
+                ))
             return result
         except Exception as exc:
-            duration = time.time() - start_time
+            duration = time_module.time() - start_time
             tb = traceback.format_exc()
             await log_error(
                 source="tools",
                 message=f"Tool '{tool_name}' execution failed: {exc}",
-                detail=f"Duration: {duration:.3f}s\nArguments: {args_str}\nError: {exc}\nTraceback:\n{tb}",
+                detail=f"Duration: {duration:.3f}s\nError: {exc}\nTraceback:\n{tb}",
                 level="error"
             )
             raise exc
@@ -78,7 +92,11 @@ async def terminate_call_room(room_name: str, delay: float = 3.0):
 
 async def _log(msg: str, detail: str = "", level: str = "info") -> None:
     try:
-        await log_error("agent", msg, detail, level)
+        if level == "info":
+            logger.info("%s %s", msg, detail[:160] if detail else "")
+            asyncio.create_task(log_error("agent", msg, detail, level))
+        else:
+            await log_error("agent", msg, detail, level)
     except Exception:
         pass
 
@@ -103,7 +121,7 @@ class AppointmentTools(llm.ToolContext):
         self.call_session_id = call_session_id
         self.business_name = business_name
         self.service_type = service_type
-        self._call_start_time = time.time()
+        self._call_start_time = time_module.time()
         self._sip_domain = os.getenv("VOBIZ_SIP_DOMAIN", "")
         self.recording_url: Optional[str] = None
         self._booking_id: Optional[str] = None
@@ -112,6 +130,11 @@ class AppointmentTools(llm.ToolContext):
         self._end_call_called = False
         self._final_log_written = False
         self._fallback_log_attempted = False
+        self._settings_cache: dict[str, str] = {}
+        self._gcal_manager: Optional[GoogleCalendarManager] = None
+        self._gcal_manager_key: Optional[tuple[str, str]] = None
+        self._enabled_tools_cache: Optional[list] = None
+        self._availability_cache: dict[tuple[str, str, str, str], dict] = {}
         super().__init__(tools=[])
 
     async def mark_connected(self) -> None:
@@ -125,6 +148,89 @@ class AppointmentTools(llm.ToolContext):
                 )
         except Exception:
             pass
+
+    async def _get_setting_cached(self, key: str, default: str = "") -> str:
+        if key not in self._settings_cache:
+            self._settings_cache[key] = await get_setting(key, default)
+        return self._settings_cache.get(key, default)
+
+    async def _load_calendar_settings(self) -> tuple[str, str, int]:
+        gcal_json, gcal_id, duration_raw = await asyncio.gather(
+            self._get_setting_cached("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", ""),
+            self._get_setting_cached("GOOGLE_CALENDAR_ID", "primary"),
+            self._get_setting_cached("GOOGLE_CALENDAR_SLOT_DURATION", "30"),
+        )
+        try:
+            duration = int(duration_raw or "30")
+        except ValueError:
+            duration = 30
+        return gcal_json, gcal_id or "primary", duration
+
+    async def _get_enabled_tools_cached(self) -> Optional[list]:
+        if self._enabled_tools_cache is None:
+            self._enabled_tools_cache = await get_enabled_tools()
+        return self._enabled_tools_cache
+
+    def _get_gcal_manager(self, gcal_json: str, gcal_id: str) -> Optional[GoogleCalendarManager]:
+        if not gcal_json:
+            return None
+        key = (gcal_json, gcal_id or "primary")
+        if self._gcal_manager is None or self._gcal_manager_key != key:
+            self._gcal_manager = GoogleCalendarManager(gcal_json, gcal_id)
+            self._gcal_manager_key = key
+        return self._gcal_manager
+
+    async def _gcal_call(self, timeout: float, func, *args):
+        return await asyncio.wait_for(asyncio.to_thread(func, *args), timeout=timeout)
+
+    def _availability_cache_key(
+        self,
+        date: str,
+        slot_time: str,
+        business_name: str,
+        service_type: str,
+    ) -> tuple[str, str, str, str]:
+        return (
+            (date or "").strip(),
+            (slot_time or "").strip(),
+            (business_name or "").strip().lower(),
+            (service_type or "").strip().lower(),
+        )
+
+    def _get_cached_availability(
+        self,
+        date: str,
+        slot_time: str,
+        business_name: str,
+        service_type: str,
+    ) -> Optional[dict]:
+        key = self._availability_cache_key(date, slot_time, business_name, service_type)
+        item = self._availability_cache.get(key)
+        if not item:
+            return None
+        age = time_module.time() - item.get("cached_at", 0)
+        if age > AVAILABILITY_CACHE_TTL_SECONDS:
+            self._availability_cache.pop(key, None)
+            return None
+        return item
+
+    def _set_cached_availability(
+        self,
+        date: str,
+        slot_time: str,
+        business_name: str,
+        service_type: str,
+        available: bool,
+        result: str,
+        source: str,
+    ) -> None:
+        key = self._availability_cache_key(date, slot_time, business_name, service_type)
+        self._availability_cache[key] = {
+            "available": available,
+            "result": result,
+            "source": source,
+            "cached_at": time_module.time(),
+        }
 
     def build_tool_list(self, enabled: list) -> list:
         """Return tool methods for the final resolved tool-name list."""
@@ -154,8 +260,10 @@ class AppointmentTools(llm.ToolContext):
         expected_service_type: the service context that the AI is discussing
         Returns 'available' or 'unavailable: next available slot is <slot>'.
         """
+        total_start = time_module.perf_counter()
+        spans: dict[str, float] = {}
         try:
-            await _log("Availability check started", f"date={date} time={time} expected_biz={expected_business_name} expected_svc={expected_service_type}", "info")
+            await _log("Availability check started", f"date={date} time={time}", "info")
             
             # Verify call metadata context matches parameters (Issue 5)
             if (expected_business_name.strip().lower() != (self.business_name or "").strip().lower() or
@@ -163,41 +271,85 @@ class AppointmentTools(llm.ToolContext):
                 err_msg = f"Context validation failed: expected business '{self.business_name}' and service '{self.service_type}', but tool received '{expected_business_name}' and '{expected_service_type}'."
                 await log_error("tools", "Context validation failed in check_availability", err_msg, "error")
                 return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."
-            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
-            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
-            duration_raw = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
-            try:
-                duration = int(duration_raw or "30")
-            except ValueError:
-                duration = 30
-
-            local_available = await check_slot(date, time)
-            if gcal_json:
-                await _log("Availability check using Google Calendar", f"calendar_id={gcal_id}", "info")
-                manager = GoogleCalendarManager(gcal_json, gcal_id)
-                calendar_available = manager.is_slot_available(date, time, duration)
-                if local_available and calendar_available:
-                    await _log("Availability result", f"available via Google Calendar date={date} time={time}", "info")
-                    return "available"
-                next_slot = manager.get_next_available(date, time, duration)
+            cached = self._get_cached_availability(date, time, expected_business_name, expected_service_type)
+            if cached:
+                spans["cache_hit"] = 1
+                spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
                 await _log(
-                    "Availability result",
-                    f"unavailable via Google Calendar date={date} time={time}; next={next_slot}",
+                    "Availability cache hit",
+                    f"date={date} time={time} available={cached.get('available')} source={cached.get('source')}; timing={spans}",
                     "info",
                 )
-                return f"unavailable: next available slot is {next_slot}"
+                return cached["result"]
 
-            await _log("Availability check using Supabase fallback", f"date={date} time={time}", "info")
-            if local_available:
-                await _log("Availability result", f"available via Supabase date={date} time={time}", "info")
-                return "available"
-            next_slot = await get_next_available(date, time)
-            await _log(
-                "Availability result",
-                f"unavailable via Supabase date={date} time={time}; next={next_slot}",
-                "info",
+            t0 = time_module.perf_counter()
+            gcal_json, gcal_id, duration = await self._load_calendar_settings()
+            spans["settings_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
+
+            t0 = time_module.perf_counter()
+            local_task = asyncio.create_task(check_slot(date, time))
+            manager = self._get_gcal_manager(gcal_json, gcal_id)
+            calendar_task = (
+                asyncio.create_task(self._gcal_call(
+                    GCAL_AVAILABILITY_TIMEOUT_SECONDS,
+                    manager.is_slot_available,
+                    date,
+                    time,
+                    duration,
+                ))
+                if manager else None
             )
-            return f"unavailable: next available slot is {next_slot}"
+            local_available = await local_task
+            spans["supabase_slot_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
+            if not local_available:
+                if calendar_task:
+                    if calendar_task.done():
+                        try:
+                            calendar_task.result()
+                        except Exception:
+                            pass
+                    else:
+                        calendar_task.cancel()
+                spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+                result = "unavailable: that slot is already booked. Please suggest another time."
+                self._set_cached_availability(date, time, expected_business_name, expected_service_type, False, result, "supabase")
+                await _log("Availability result", f"unavailable via Supabase; timing={spans}", "info")
+                return result
+
+            if gcal_json:
+                g0 = time_module.perf_counter()
+                try:
+                    calendar_available = await calendar_task
+                    spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                except asyncio.TimeoutError:
+                    spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                    await _log("Availability check timed out", f"calendar_id={gcal_id}; timing={spans}", "warning")
+                    return "Unable to confirm calendar availability quickly right now. Please offer another time or I can have the team follow up."
+                except Exception as exc:
+                    spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                    await _log("Availability check failed in Google Calendar", str(exc), "error")
+                    return "Unable to confirm calendar availability right now. Please offer another time or I can have the team follow up."
+                if local_available and calendar_available:
+                    spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+                    self._set_cached_availability(date, time, expected_business_name, expected_service_type, True, "available", "google_calendar")
+                    await _log("Availability result", f"available via Google Calendar; timing={spans}", "info")
+                    return "available"
+                spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+                result = "unavailable: that calendar slot is busy. Please suggest another time."
+                self._set_cached_availability(date, time, expected_business_name, expected_service_type, False, result, "google_calendar")
+                await _log("Availability result", f"unavailable via Google Calendar; timing={spans}", "info")
+                return result
+
+            if local_available:
+                spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+                self._set_cached_availability(date, time, expected_business_name, expected_service_type, True, "available", "supabase")
+                await _log("Availability result", f"available via Supabase; timing={spans}", "info")
+                return "available"
+            spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+            result = "unavailable: that slot is already booked. Please suggest another time."
+            self._set_cached_availability(date, time, expected_business_name, expected_service_type, False, result, "supabase")
+            await _log("Availability result", f"unavailable via Supabase; timing={spans}", "info")
+            return result
         except Exception as exc:
             await _log("Availability check failed", str(exc), "error")
             return "Unable to check availability right now — please suggest a date and I will confirm."
@@ -222,13 +374,15 @@ class AppointmentTools(llm.ToolContext):
         expected_business_name: the business context name that the AI represents
         expected_service_type: the service context that the AI is discussing
         """
+        total_start = time_module.perf_counter()
+        spans: dict[str, float] = {}
         try:
             self._booking_id = None
             self._booking_confirmed = False
             self._booking_error = None
             await _log(
                 "Appointment booking started",
-                f"name={name} phone={phone} email={email} date={date} time={time} service={service} expected_biz={expected_business_name} expected_svc={expected_service_type}",
+                f"date={date} time={time} service={service}",
                 "info",
             )
             
@@ -245,29 +399,64 @@ class AppointmentTools(llm.ToolContext):
                 await log_error("tools", "Context validation failed in book_appointment", err_msg, "error")
                 return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."
 
-            if not await check_slot(date, time):
-                next_slot = await get_next_available(date, time)
-                self._booking_error = f"slot unavailable; next={next_slot}"
+            cached = self._get_cached_availability(date, time, expected_business_name, expected_service_type)
+            if cached and not cached.get("available"):
+                self._booking_error = f"cached slot unavailable via {cached.get('source')}"
                 await _log("Appointment booking blocked", self._booking_error, "warning")
-                return f"That slot was just booked. The next available slot is {next_slot}."
+                return "That slot is unavailable. Please suggest another time."
 
-            gcal_json = await get_setting("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "")
-            gcal_id = await get_setting("GOOGLE_CALENDAR_ID", "primary")
-            duration_raw = await get_setting("GOOGLE_CALENDAR_SLOT_DURATION", "30")
-            try:
-                duration = int(duration_raw or "30")
-            except ValueError:
-                duration = 30
-
-            manager = GoogleCalendarManager(gcal_json, gcal_id) if gcal_json else None
-            if manager and not manager.is_slot_available(date, time, duration):
-                next_slot = manager.get_next_available(date, time, duration)
-                self._booking_error = f"Google Calendar slot unavailable; next={next_slot}"
+            t0 = time_module.perf_counter()
+            local_available = await check_slot(date, time)
+            spans["supabase_slot_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
+            if not local_available:
+                self._booking_error = "slot unavailable"
+                self._set_cached_availability(date, time, expected_business_name, expected_service_type, False, "unavailable: that slot is already booked. Please suggest another time.", "supabase")
                 await _log("Appointment booking blocked", self._booking_error, "warning")
-                return f"That slot is unavailable. The next available slot is {next_slot}."
+                return "That slot was just booked. Please suggest another time."
+
+            t0 = time_module.perf_counter()
+            gcal_json, gcal_id, duration = await self._load_calendar_settings()
+            spans["settings_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
+
+            manager = self._get_gcal_manager(gcal_json, gcal_id)
+            if manager:
+                if cached and cached.get("available"):
+                    spans["availability_cache_hit"] = 1
+                    spans["gcal_availability_ms"] = 0.0
+                    calendar_available = True
+                else:
+                    g0 = time_module.perf_counter()
+                    try:
+                        calendar_available = await self._gcal_call(
+                            GCAL_AVAILABILITY_TIMEOUT_SECONDS,
+                            manager.is_slot_available,
+                            date,
+                            time,
+                            duration,
+                        )
+                        spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                    except asyncio.TimeoutError:
+                        spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                        self._booking_error = "Google Calendar availability check timed out"
+                        await _log("Appointment booking blocked", f"{self._booking_error}; timing={spans}", "warning")
+                        return "I could not confirm that calendar slot quickly enough. Please suggest another time or I can have the team follow up."
+                    except Exception as exc:
+                        spans["gcal_availability_ms"] = round((time_module.perf_counter() - g0) * 1000, 1)
+                        self._booking_error = f"Google Calendar availability failed: {exc}"
+                        await _log("Appointment booking blocked", self._booking_error, "warning")
+                        return "I could not confirm that calendar slot right now. Please suggest another time or I can have the team follow up."
+                    if calendar_available:
+                        self._set_cached_availability(date, time, expected_business_name, expected_service_type, True, "available", "google_calendar")
+                if not calendar_available:
+                    self._booking_error = "Google Calendar slot unavailable"
+                    self._set_cached_availability(date, time, expected_business_name, expected_service_type, False, "unavailable: that calendar slot is busy. Please suggest another time.", "google_calendar")
+                    await _log("Appointment booking blocked", f"{self._booking_error}; timing={spans}", "warning")
+                    return "That calendar slot is unavailable. Please suggest another time."
 
             try:
+                t0 = time_module.perf_counter()
                 booking_id = await insert_appointment(name, phone, email, date, time, service)
+                spans["supabase_insert_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
             except Exception as exc:
                 self._booking_error = str(exc)
                 await _log("Supabase appointment insert failed", self._booking_error, "error")
@@ -276,12 +465,14 @@ class AppointmentTools(llm.ToolContext):
             self._booking_id = booking_id
             self._booking_confirmed = True
             self._booking_error = None
-            await _log("Supabase appointment insert succeeded", f"booking_id={booking_id}", "info")
+            await _log("Supabase appointment insert succeeded", f"booking_id={booking_id}; timing={spans}", "info")
 
             # Deduct appointment platform fee (non-blocking — does not affect booking confirmation)
             try:
                 from db import get_platform_pricing, deduct_wallet_for_event, get_current_tenant_id, get_current_user_email
+                t0 = time_module.perf_counter()
                 appt_pricing = await get_platform_pricing()
+                spans["wallet_pricing_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
                 tenant_id = get_current_tenant_id()
                 if appt_pricing["price_per_appointment"] > 0 and tenant_id:
                     asyncio.create_task(
@@ -295,7 +486,9 @@ class AppointmentTools(llm.ToolContext):
 
             
             # Send confirmation email if tool is enabled
-            enabled = await get_enabled_tools()
+            t0 = time_module.perf_counter()
+            enabled = await self._get_enabled_tools_cached()
+            spans["email_tool_check_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
             if enabled and "send_email" in enabled:
                 subject = f"Appointment Confirmed: {service} on {date} at {time}"
                 body = (
@@ -329,19 +522,45 @@ class AppointmentTools(llm.ToolContext):
             if manager:
                 try:
                     await _log("Google Calendar sync started", f"booking_id={booking_id} calendar_id={gcal_id}", "info")
-                    event_id, event_link = manager.book_event(name, phone, date, time, service, duration)
+                    t0 = time_module.perf_counter()
+                    event_id, event_link = await self._gcal_call(
+                        GCAL_EVENT_TIMEOUT_SECONDS,
+                        manager.book_event,
+                        name,
+                        phone,
+                        date,
+                        time,
+                        service,
+                        duration,
+                    )
+                    spans["gcal_event_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
                     if event_id or event_link:
+                        t0 = time_module.perf_counter()
                         await update_appointment_gcal(booking_id, event_id or "", event_link or "")
+                        spans["supabase_gcal_update_ms"] = round((time_module.perf_counter() - t0) * 1000, 1)
                     await _log(
                         "Google Calendar sync succeeded",
-                        f"booking_id={booking_id} event_id={event_id or ''} event_link={event_link or ''}",
+                        f"booking_id={booking_id} event_id={event_id or ''}; timing={spans}",
                         "info",
+                    )
+                except asyncio.TimeoutError:
+                    self._booking_error = "Google Calendar sync timed out"
+                    spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+                    await _log(
+                        "Google Calendar sync timed out after local appointment insert",
+                        f"booking_id={booking_id}; timing={spans}",
+                        "warning",
+                    )
+                    return (
+                        f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} "
+                        f"for {service}. Calendar sync is pending."
                     )
                 except Exception as exc:
                     self._booking_error = f"Google Calendar sync failed: {exc}"
+                    spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
                     await _log(
                         "Google Calendar sync failed after local appointment insert",
-                        f"booking_id={booking_id} error={exc}",
+                        f"booking_id={booking_id} error={exc}; timing={spans}",
                         "error",
                     )
                     return (
@@ -350,6 +569,8 @@ class AppointmentTools(llm.ToolContext):
                     )
             else:
                 await _log("Google Calendar sync skipped", "Google Calendar is not configured; Supabase booking only", "info")
+            spans["total_ms"] = round((time_module.perf_counter() - total_start) * 1000, 1)
+            await _log("Appointment booking completed", f"booking_id={booking_id}; timing={spans}", "info")
             return f"Confirmed! Booking ID: {booking_id}. See you on {date} at {time} for {service}."
         except Exception as exc:
             self._booking_confirmed = False
@@ -365,7 +586,7 @@ class AppointmentTools(llm.ToolContext):
         reason: brief description
         """
         self._end_call_called = True
-        duration = int(time.time() - self._call_start_time)
+        duration = int(time_module.time() - self._call_start_time)
         await _log(
             "End call invoked",
             (
@@ -440,7 +661,7 @@ class AppointmentTools(llm.ToolContext):
             return False
 
         self._fallback_log_attempted = True
-        duration = int(time.time() - self._call_start_time)
+        duration = int(time_module.time() - self._call_start_time)
         notes = None
         
         # Correct fallback outcome to booked if booking succeeded (Issue 2)
@@ -587,15 +808,17 @@ class AppointmentTools(llm.ToolContext):
     @log_tool_execution
     async def lookup_contact(self, phone: str) -> str:
         """
-        Look up a contact's full history. Call at the START of every call before engaging.
+        Look up a contact's full history after the opening identity greeting.
+        Do not delay the first greeting or first reply for this lookup.
         phone: the lead's phone number with country code
         Returns call history, appointments, and remembered details.
         """
         if not phone:
             return "Phone number missing; ask the caller to confirm their number."
         try:
-            logger.info("TIMING LOG: lookup_contact started")
-            await log_error("tools", "TIMING LOG: lookup_contact started", "", "info")
+            logger.debug("TIMING LOG: lookup_contact started")
+            if DEBUG_TOOL_LOGS:
+                asyncio.create_task(log_error("tools", "TIMING LOG: lookup_contact started", "", "info"))
             
             calls, appointments, memories = await asyncio.gather(
                 get_calls_by_phone(phone),
@@ -603,8 +826,9 @@ class AppointmentTools(llm.ToolContext):
                 get_contact_memory(phone)
             )
             
-            logger.info("TIMING LOG: lookup_contact finished")
-            await log_error("tools", "TIMING LOG: lookup_contact finished", "", "info")
+            logger.debug("TIMING LOG: lookup_contact finished")
+            if DEBUG_TOOL_LOGS:
+                asyncio.create_task(log_error("tools", "TIMING LOG: lookup_contact finished", "", "info"))
             
             if not calls and not appointments and not memories:
                 return f"No history for {phone}. First-time contact."
@@ -624,8 +848,9 @@ class AppointmentTools(llm.ToolContext):
                     lines.append(f"  • {a.get('date')} {a.get('time')} — {a.get('service')} [{a.get('status')}]")
             return "\n".join(lines)
         except Exception:
-            logger.info("TIMING LOG: lookup_contact finished (with error)")
-            await log_error("tools", "TIMING LOG: lookup_contact finished (with error)", "", "info")
+            logger.debug("TIMING LOG: lookup_contact finished (with error)")
+            if DEBUG_TOOL_LOGS:
+                asyncio.create_task(log_error("tools", "TIMING LOG: lookup_contact finished (with error)", "", "info"))
             return "Unable to retrieve contact history."
 
     @llm.function_tool
