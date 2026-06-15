@@ -268,3 +268,40 @@ CREATE INDEX IF NOT EXISTS idx_pending_invites_email ON pending_invites (email);
 -- Platform pricing is stored as regular settings rows under tenant_id='default'.
 -- Keys: PRICE_PER_CALL_ATTEMPT, PRICE_PER_APPOINTMENT
 -- These are inserted/updated via the /api/super-admin/pricing endpoint.
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Phase 3: Tenant Deletion, Suspension and Email Delivery Logs Upgrade
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS deleted_tenants (
+    tenant_id TEXT PRIMARY KEY,
+    tenant_name TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    email TEXT,
+    phone TEXT,
+    created_at TEXT,
+    deleted_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+    deleted_by TEXT,
+    deletion_reason TEXT,
+    wallet_balance NUMERIC NOT NULL DEFAULT 0,
+    billing_mode TEXT NOT NULL,
+    full_snapshot_json TEXT NOT NULL
+);
+ALTER TABLE deleted_tenants DISABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS email_delivery_logs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    recipient TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    provider_response TEXT,
+    error_message TEXT,
+    status TEXT NOT NULL DEFAULT 'sent', -- 'sent', 'delivered', 'failed', 'opened'
+    timestamp TEXT NOT NULL DEFAULT NOW()::TEXT
+);
+ALTER TABLE email_delivery_logs DISABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_email_delivery_logs_tenant ON email_delivery_logs (tenant_id, timestamp DESC);
+
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspension_reason TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspension_notes TEXT;
+

@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -131,6 +132,23 @@ tr:hover td{background:#f8fafc}
 @keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
 .spinner{width:16px;height:16px;border:2px solid rgba(91,91,214,.18);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Sub-tabs styling */
+.sub-tabs { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.sub-tab-btn { background: none; border: none; padding: 6px 12px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; border-radius: 6px; transition: all 0.15s; }
+.sub-tab-btn:hover { background: #f3f4f6; color: var(--text); }
+.sub-tab-btn.active { background: var(--accent); color: #fff; }
+
+/* Chart grid styling */
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.chart-box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; min-height: 280px; box-shadow: var(--shadow-sm); }
+.chart-box canvas { width: 100% !important; height: 210px !important; }
+
+/* Dashboard layout */
+.top-spenders-list { display: flex; flex-direction: column; gap: 8px; }
+.spender-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; font-size: 13px; }
+.spender-row strong { color: var(--text); }
+.spender-row span { color: var(--muted); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -142,8 +160,12 @@ tr:hover td{background:#f8fafc}
       <div class="brand-text"><strong>Autonova</strong><span>Super Admin Console</span></div>
     </div>
     <nav>
-      <button class="nav-btn active" onclick="switchTab('tenants')">Tenants Workspace</button>
-      <button class="nav-btn" onclick="switchTab('activity')">Platform Activity</button>
+      <button class="nav-btn active" id="btn-dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="nav-btn" id="btn-tenants" onclick="switchTab('tenants')">Tenants</button>
+      <button class="nav-btn" id="btn-pricing" onclick="switchTab('pricing')">Pricing & Billing</button>
+      <button class="nav-btn" id="btn-analytics" onclick="switchTab('analytics')">Analytics</button>
+      <button class="nav-btn" id="btn-health" onclick="switchTab('health')">System Health</button>
+      <button class="nav-btn" id="btn-activity" onclick="switchTab('activity')">Platform Activity</button>
     </nav>
     <div class="sidebar-footer">
       <button class="btn btn-secondary btn-sm" style="width:100%" onclick="logoutAdmin()">Logout</button>
@@ -153,96 +175,411 @@ tr:hover td{background:#f8fafc}
   <section class="main-area">
     <header class="topbar">
       <div>
-        <h1 id="page-title">Tenants Workspace</h1>
-        <p id="page-subtitle">Manage multi-tenant SaaS accounts, wallets, branding, and billing credentials.</p>
+        <h1 id="page-title">Dashboard</h1>
+        <p id="page-subtitle">Overview of platform metrics, revenues, system performance, and tenant accounts.</p>
       </div>
     </header>
 
     <main>
-      <div id="section-tenants">
-        <div class="section-label">Overview stats</div>
+      <!-- Section 1: Dashboard -->
+      <div id="section-dashboard">
+        <div class="section-label">Revenue Overview</div>
         <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-label">Total Tenants</div><div class="kpi-value blue" id="stat-total-tenants">-</div></div>
-          <div class="kpi"><div class="kpi-label">Active</div><div class="kpi-value green" id="stat-active-tenants">-</div></div>
-          <div class="kpi"><div class="kpi-label">Suspended</div><div class="kpi-value red" id="stat-suspended-tenants">-</div></div>
-          <div class="kpi"><div class="kpi-label">Trial</div><div class="kpi-value" id="stat-trial-tenants">-</div></div>
-          <div class="kpi"><div class="kpi-label">Platform Calls</div><div class="kpi-value blue" id="stat-total-calls">-</div></div>
+          <div class="kpi"><div class="kpi-label">Today's Revenue</div><div class="kpi-value green" id="db-today-rev">Rs 0.00</div></div>
+          <div class="kpi"><div class="kpi-label">Monthly Revenue</div><div class="kpi-value blue" id="db-month-rev">Rs 0.00</div></div>
+          <div class="kpi"><div class="kpi-label">Total Revenue</div><div class="kpi-value blue" id="db-total-rev">Rs 0.00</div></div>
+          <div class="kpi"><div class="kpi-label">Credits Used</div><div class="kpi-value red" id="db-credits-used">Rs 0.00</div></div>
+          <div class="kpi"><div class="kpi-label">Credits Remaining</div><div class="kpi-value green" id="db-credits-remaining">Rs 0.00</div></div>
+        </div>
+
+        <div class="section-label">Usage & Accounts</div>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="kpi-label">Total Calls</div><div class="kpi-value blue" id="db-total-calls">0</div></div>
+          <div class="kpi"><div class="kpi-label">Connected Calls</div><div class="kpi-value green" id="db-connected-calls">0</div></div>
+          <div class="kpi"><div class="kpi-label">Bookings Confirmed</div><div class="kpi-value green" id="db-bookings">0</div></div>
+          <div class="kpi"><div class="kpi-label">Inbound Calls</div><div class="kpi-value blue" id="db-inbound">0</div></div>
+          <div class="kpi"><div class="kpi-label">Active Tenants</div><div class="kpi-value green" id="db-active-tenants">0</div></div>
+        </div>
+
+        <div class="form-row" style="margin-top: 20px;">
+          <div class="card" style="flex: 1.5;">
+            <div class="card-header">
+              <h3 class="card-title">Top Spending Tenants</h3>
+            </div>
+            <div class="top-spenders-list" id="db-top-spenders" style="padding: 10px 0 0 0;">
+              <div style="text-align:center; padding: 16px; color: var(--muted)">Loading spenders...</div>
+            </div>
+          </div>
+          <div class="card" style="flex: 1;">
+            <div class="card-header">
+              <h3 class="card-title">Tenant Account Mix</h3>
+            </div>
+            <div style="padding: 10px 0 0 0; display:flex; flex-direction:column; gap:8px;">
+              <div class="spender-row"><strong>Trial Tenants</strong><span id="db-trial-tenants" style="color:var(--muted)">0</span></div>
+              <div class="spender-row"><strong>Suspended Tenants</strong><span id="db-suspended-tenants" style="color:var(--danger)">0</span></div>
+              <div class="spender-row"><strong>Deleted Tenants</strong><span id="db-deleted-tenants" style="color:var(--muted)">0</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: Tenants -->
+      <div id="section-tenants" style="display:none">
+        <div class="sub-tabs">
+          <button class="sub-tab-btn active" id="subbtn-active-tenants" onclick="switchTenantsSubtab('active')">Active Accounts</button>
+          <button class="sub-tab-btn" id="subbtn-deleted-tenants" onclick="switchTenantsSubtab('deleted')">Deleted Tenants</button>
+        </div>
+
+        <!-- Subtab: Active Accounts -->
+        <div id="subtab-active-tenants-panel">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Tenant Management</h3>
+              <button class="btn btn-primary btn-sm" onclick="openCreateModal()">Create Tenant</button>
+            </div>
+            
+            <div class="table-toolbar">
+              <div class="filters">
+                <input id="tenant-search" type="search" placeholder="Search company or slug..." oninput="renderTenants()"/>
+                <select id="tenant-status-filter" onchange="renderTenants()">
+                  <option value="">All Statuses</option>
+                  <option value="ACTIVE">Active</option>
+                  <option value="SUSPENDED">Suspended</option>
+                  <option value="TRIAL">Trial</option>
+                  <option value="DISABLED">Disabled</option>
+                </select>
+                <select id="tenant-billing-filter" onchange="renderTenants()">
+                  <option value="">All Billing Modes</option>
+                  <option value="MANAGED">Managed (Autonova keys)</option>
+                  <option value="BYOK">BYOK (Bring Your Own Key)</option>
+                </select>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="loadDashboard()">Refresh</button>
+            </div>
+
+            <div class="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Company Name</th>
+                    <th>Slug</th>
+                    <th>Status</th>
+                    <th>Billing Mode</th>
+                    <th>Wallet Balance</th>
+                    <th>Created Date</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tenant-tbody">
+                  <tr class="empty-row"><td colspan="7">Loading tenants...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Subtab: Deleted Tenants -->
+        <div id="subtab-deleted-tenants-panel" style="display:none">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Deleted Tenants Archive</h3>
+            </div>
+            <div class="table-toolbar">
+              <div class="filters">
+                <input id="deleted-tenant-search" type="search" placeholder="Search archived tenants..." oninput="renderDeletedTenants()"/>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="loadDeletedTenants()">Refresh</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Company Name</th>
+                    <th>Slug</th>
+                    <th>Deleted At</th>
+                    <th>Deleted By</th>
+                    <th>Reason</th>
+                    <th>Ending Balance</th>
+                    <th>Billing Mode</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="deleted-tenant-tbody">
+                  <tr class="empty-row"><td colspan="8">Loading deleted tenants...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Pricing & Billing -->
+      <div id="section-pricing" style="display:none">
+        <div class="form-row">
+          <div class="card" style="flex:2">
+            <div class="card-header" style="border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:16px;">
+              <h3 class="card-title">Platform Pricing Settings</h3>
+              <button class="btn btn-primary btn-sm" onclick="savePricing()">Save Pricing</button>
+            </div>
+            
+            <form id="pricing-form" onsubmit="savePricingForm(event)">
+              <div class="integration-title">Call Costs</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Cost per outbound attempt (Rs)</label>
+                  <input id="price-outbound-attempt" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Per outbound call dispatch</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per connected call (Rs)</label>
+                  <input id="price-connected-call" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Flat fee on call pick-up</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per minute (Rs)</label>
+                  <input id="price-minute" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Call duration billing rate</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per inbound call (Rs)</label>
+                  <input id="price-inbound-call" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Flat fee on incoming routing</span>
+                </div>
+              </div>
+
+              <div class="integration-title">Booking Costs</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Cost per appointment booked (Rs)</label>
+                  <input id="price-appointment" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Deducted on confirmed booking</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per calendar sync (Rs)</label>
+                  <input id="price-calendar-sync" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Flat fee on slot durations loading</span>
+                </div>
+              </div>
+
+              <div class="integration-title">Messaging Costs</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Cost per SMS (Rs)</label>
+                  <input id="price-sms" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Per SMS notification dispatched</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per Email (Rs)</label>
+                  <input id="price-email" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Per email log success</span>
+                </div>
+                <div class="form-group">
+                  <label>Cost per WhatsApp (Rs)</label>
+                  <input id="price-whatsapp" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">WhatsApp API confirmation message</span>
+                </div>
+              </div>
+
+              <div class="integration-title">AI & Session Costs</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>AI usage fee per minute (Rs)</label>
+                  <input id="price-ai-minute" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Gemini LLM model processing cost</span>
+                </div>
+                <div class="form-group">
+                  <label>Realtime session fee (Rs)</label>
+                  <input id="price-realtime-session" type="number" step="0.01" min="0" required/>
+                  <span class="helper-text">Flat fee on live audio stream start</span>
+                </div>
+              </div>
+
+              <div class="integration-title">Credits Configuration</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Default signup credits (Rs)</label>
+                  <input id="price-signup-credits" type="number" step="0.01" min="0" required/>
+                </div>
+                <div class="form-group">
+                  <label>Trial credits limit (Rs)</label>
+                  <input id="price-trial-credits" type="number" step="0.01" min="0" required/>
+                </div>
+                <div class="form-group">
+                  <label>Manual adjustment credits cap (Rs)</label>
+                  <input id="price-manual-credits" type="number" step="0.01" min="0" required/>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          <div class="card" style="flex:1;">
+            <div class="integration-title">Billing Model Calculations</div>
+            <p style="font-size:13px; color:var(--muted); line-height:1.6; margin-bottom:14px;">
+              Revenues are automatically deducted from the tenant's wallet depending on their billing rates.
+            </p>
+            <div style="background:#f1f5f9; padding:12px; border-radius:8px; font-size:12px; line-height:1.5;">
+              <strong style="display:block; margin-bottom:6px;">Calculation Example:</strong>
+              • Outbound Attempt: <strong>Rs 1.50</strong><br/>
+              • Connected Call pick: <strong>Rs 2.00</strong><br/>
+              • 3 Mins Duration: 3 × Rs 1.00 = <strong>Rs 3.00</strong><br/>
+              • Confirmed Appointment: <strong>Rs 10.00</strong><br/>
+              • Booking Email: <strong>Rs 0.20</strong><br/>
+              <span style="border-top:1px solid #cbd5e1; display:block; margin:6px 0; padding-top:6px;"></span>
+              <strong>Total Deducted: Rs 16.70</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Analytics -->
+      <div id="section-analytics" style="display:none">
+        <div class="chart-grid">
+          <div class="chart-box">
+            <h3 class="card-title" style="margin-bottom:8px">Calls Per Day</h3>
+            <canvas id="chart-calls"></canvas>
+          </div>
+          <div class="chart-box">
+            <h3 class="card-title" style="margin-bottom:8px">Bookings Per Day</h3>
+            <canvas id="chart-bookings"></canvas>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-box">
+            <h3 class="card-title" style="margin-bottom:8px">Revenue Trend (Credits Spent)</h3>
+            <canvas id="chart-revenue"></canvas>
+          </div>
+          <div class="chart-box">
+            <h3 class="card-title" style="margin-bottom:8px">Tenant Registrations Growth</h3>
+            <canvas id="chart-growth"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 5: System Health -->
+      <div id="section-health" style="display:none">
+        <div class="form-row">
+          <div class="card" style="flex:1">
+            <div class="integration-title">Services Status</div>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div class="spender-row"><strong>Supabase Database</strong><span style="color:var(--success)">CONNECTED</span></div>
+              <div class="spender-row"><strong>Authentication Broker</strong><span style="color:var(--success)">ACTIVE</span></div>
+              <div class="spender-row"><strong>SMTP Mail Server</strong><span id="health-smtp-status" style="color:var(--muted)">Checking...</span></div>
+            </div>
+          </div>
+          
+          <div class="card" style="flex:1">
+            <div class="integration-title">SMTP Mail Test</div>
+            <div class="form-group" style="margin-bottom:12px">
+              <label>Recipient Email Address</label>
+              <input type="email" id="test-email-to" placeholder="e.g. admin@yourdomain.com"/>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="sendTestEmail()">Send Test Email</button>
+            <div id="test-email-status" style="margin-top:10px; font-size:12px;"></div>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">Tenant Management</h3>
-            <button class="btn btn-primary btn-sm" onclick="openCreateModal()">Create Tenant</button>
+            <h3 class="card-title">System Error Logs</h3>
+            <button class="btn btn-danger btn-sm" onclick="clearSystemErrors()">Clear Logs</button>
           </div>
-          
-          <div class="table-toolbar">
-            <div class="filters">
-              <input id="tenant-search" type="search" placeholder="Search company or slug..." oninput="renderTenants()"/>
-              <select id="tenant-status-filter" onchange="renderTenants()">
-                <option value="">All Statuses</option>
-                <option value="ACTIVE">Active</option>
-                <option value="SUSPENDED">Suspended</option>
-                <option value="TRIAL">Trial</option>
-                <option value="DISABLED">Disabled</option>
-              </select>
-              <select id="tenant-billing-filter" onchange="renderTenants()">
-                <option value="">All Billing Modes</option>
-                <option value="MANAGED">Managed (Autonova keys)</option>
-                <option value="BYOK">BYOK (Bring Your Own Key)</option>
-              </select>
-            </div>
-            <button class="btn btn-secondary btn-sm" onclick="loadDashboard()">Refresh</button>
-          </div>
-
-          <div class="tbl-wrap">
+          <div class="tbl-wrap" style="margin-top:12px; max-height:400px; overflow-y:auto;">
             <table>
               <thead>
                 <tr>
-                  <th>Company Name</th>
-                  <th>Slug</th>
-                  <th>Status</th>
-                  <th>Billing Mode</th>
-                  <th>Wallet Balance</th>
-                  <th>Created Date</th>
-                  <th>Actions</th>
+                  <th>Timestamp</th>
+                  <th>Source</th>
+                  <th>Level</th>
+                  <th>Message</th>
+                  <th>Details</th>
                 </tr>
               </thead>
-              <tbody id="tenant-tbody">
-                <tr class="empty-row"><td colspan="7">Loading tenants...</td></tr>
+              <tbody id="error-logs-tbody">
+                <tr class="empty-row"><td colspan="5">Loading error logs...</td></tr>
               </tbody>
             </table>
           </div>
         </div>
       </div>
 
+      <!-- Section 6: Platform Activity & Email Logs -->
       <div id="section-activity" style="display:none">
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <h3 class="card-title">Platform Pricing Settings</h3>
-            <button class="btn btn-primary btn-sm" onclick="savePricing()">Save Pricing</button>
-          </div>
-          <form id="pricing-form" onsubmit="savePricingForm(event)" style="padding:16px 0 0 0">
-            <div class="form-row">
-              <div class="form-group">
-                <label>Cost Per Call Attempt (Rs)</label>
-                <input id="price-call-attempt" type="number" step="0.01" min="0" value="0.00" placeholder="e.g. 2.50"/>
-                <div class="helper-text">Deducted when an outbound call is dispatched</div>
-              </div>
-              <div class="form-group">
-                <label>Cost Per Appointment Booked (Rs)</label>
-                <input id="price-appointment" type="number" step="0.01" min="0" value="0.00" placeholder="e.g. 10.00"/>
-                <div class="helper-text">Deducted when a booking is confirmed by the agent</div>
-              </div>
-            </div>
-          </form>
+        <div class="sub-tabs">
+          <button class="sub-tab-btn active" id="subbtn-audit-logs" onclick="switchActivitySubtab('audit')">Enterprise Audit Logs</button>
+          <button class="sub-tab-btn" id="subbtn-email-logs" onclick="switchActivitySubtab('email')">Email Delivery Logs</button>
         </div>
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">Recent Platform Activity</h3>
-            <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()">Refresh</button>
+
+        <!-- Subtab: Audit Logs -->
+        <div id="subtab-audit-logs-panel">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Platform Audit Logs</h3>
+              <button class="btn btn-secondary btn-sm" onclick="exportAuditLogsCSV()">Export CSV</button>
+            </div>
+            <div class="table-toolbar">
+              <div class="filters">
+                <input id="audit-search" type="search" placeholder="Search logs..." oninput="filterAuditLogs()"/>
+                <input id="audit-date-filter" type="date" onchange="filterAuditLogs()"/>
+                <select id="audit-tenant-filter" onchange="filterAuditLogs()">
+                  <option value="">All Tenants</option>
+                </select>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="loadAuditLogs()">Refresh</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Tenant</th>
+                    <th>User</th>
+                    <th>Action</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody id="audit-logs-tbody">
+                  <tr class="empty-row"><td colspan="5">Loading audit logs...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div id="platform-audit-logs" style="max-height: 600px; overflow-y: auto;">
-            <div style="padding:20px; text-align:center; color:var(--muted)">No activity logged yet.</div>
+        </div>
+
+        <!-- Subtab: Email Logs -->
+        <div id="subtab-email-logs-panel" style="display:none">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Email Log Tracker</h3>
+            </div>
+            <div class="table-toolbar">
+              <div class="filters">
+                <input id="email-search" type="search" placeholder="Search recipient or subject..." oninput="filterEmailLogs()"/>
+                <select id="email-status-filter" onchange="filterEmailLogs()">
+                  <option value="">All</option>
+                  <option value="sent">Sent</option>
+                  <option value="delivered">Delivered</option>
+                  <option value="failed">Failed</option>
+                </select>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="loadPlatformEmailLogs()">Refresh</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Recipient</th>
+                    <th>Tenant</th>
+                    <th>Status</th>
+                    <th>Provider</th>
+                    <th>Failure Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="email-logs-tbody">
+                  <tr class="empty-row"><td colspan="6">Loading email logs...</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -780,20 +1117,54 @@ async function handleLogoUpload(fileInput, statusSpanId, clearBtnId) {
   }
 }
 
-async function loadDashboard(){
+async function loadDashboard() {
   try {
     const summary = await (await fetch('/api/super-admin/summary')).json();
-    $('stat-total-tenants').textContent = summary.total_tenants ?? 0;
-    $('stat-active-tenants').textContent = summary.active_tenants ?? 0;
-    $('stat-suspended-tenants').textContent = summary.suspended_tenants ?? 0;
-    $('stat-trial-tenants').textContent = summary.trial_tenants ?? 0;
-    $('stat-total-calls').textContent = summary.total_calls ?? 0;
+    
+    // Helper to safely set text content if element exists
+    const setSafeText = (id, val) => {
+      const el = $(id);
+      if (el) el.textContent = val;
+    };
+
+    setSafeText('db-today-rev', `Rs ${(summary.today_revenue ?? 0).toFixed(2)}`);
+    setSafeText('db-month-rev', `Rs ${(summary.monthly_revenue ?? 0).toFixed(2)}`);
+    setSafeText('db-total-rev', `Rs ${(summary.total_revenue ?? 0).toFixed(2)}`);
+    setSafeText('db-credits-used', `Rs ${(summary.total_credits_used ?? 0).toFixed(2)}`);
+    setSafeText('db-credits-remaining', `Rs ${(summary.credits_remaining ?? 0).toFixed(2)}`);
+
+    setSafeText('db-total-calls', summary.total_calls ?? 0);
+    setSafeText('db-connected-calls', summary.connected_calls ?? 0);
+    setSafeText('db-bookings', summary.appointments_booked ?? 0);
+    setSafeText('db-inbound', summary.inbound_calls ?? 0);
+    setSafeText('db-active-tenants', summary.active_tenants ?? 0);
+
+    setSafeText('db-trial-tenants', summary.trial_tenants ?? 0);
+    setSafeText('db-suspended-tenants', summary.suspended_tenants ?? 0);
+    setSafeText('db-deleted-tenants', summary.deleted_tenants ?? 0);
+
+    // Top spenders list rendering
+    const spendersList = $('db-top-spenders');
+    if (spendersList) {
+      const spenders = summary.top_spending_tenants || [];
+      if (spenders.length === 0) {
+        spendersList.innerHTML = '<div style="text-align:center; padding: 16px; color: var(--muted)">No tenant spend data recorded yet.</div>';
+      } else {
+        spendersList.innerHTML = spenders.map(s => `
+          <div class="spender-row">
+            <strong>${esc(s.tenant_name)}</strong>
+            <span>Rs ${(s.spend ?? 0).toFixed(2)}</span>
+          </div>
+        `).join('');
+      }
+    }
 
     const list = await (await fetch('/api/super-admin/tenants')).json();
     tenantsData = Array.isArray(list) ? list : [];
     renderTenants();
   } catch (err) {
-    toast('Failed to load dashboard metrics','error');
+    console.error("loadDashboard error:", err);
+    toast('Failed to load dashboard metrics', 'error');
   }
 }
 
@@ -842,6 +1213,7 @@ function renderTenants(){
           `<button class="btn btn-danger btn-sm" onclick="changeStatus('${t.id}', 'suspend')">Suspend</button>` : 
           `<button class="btn btn-secondary btn-sm" onclick="changeStatus('${t.id}', 'activate')">Activate</button>`
         }
+        <button class="btn btn-danger btn-sm" onclick="deleteTenant('${t.id}')">Delete</button>
       </td>
     </tr>`;
   }).join('');
@@ -857,21 +1229,100 @@ function toast(m,t='success'){
   setTimeout(()=>e.remove(),3500);
 }
 
-function switchTab(tab){
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('main > div').forEach(d => d.style.display = 'none');
-  
-  if(tab === 'tenants'){
-    document.querySelectorAll('.nav-btn')[0].classList.add('active');
-    $('page-title').textContent = 'Tenants Workspace';
-    $('section-tenants').style.display = 'block';
+function switchTab(tab) {
+  // Remove active class from all nav buttons
+  const navBtns = ['dashboard', 'tenants', 'pricing', 'analytics', 'health', 'activity'];
+  navBtns.forEach(btn => {
+    const el = $(`btn-${btn}`);
+    if (el) el.classList.remove('active');
+  });
+
+  // Hide all sections
+  const sections = ['dashboard', 'tenants', 'pricing', 'analytics', 'health', 'activity'];
+  sections.forEach(sec => {
+    const el = $(`section-${sec}`);
+    if (el) el.style.display = 'none';
+  });
+
+  // Activate selected nav button and show selected section
+  const activeBtn = $(`btn-${tab}`);
+  if (activeBtn) activeBtn.classList.add('active');
+
+  const activeSec = $(`section-${tab}`);
+  if (activeSec) activeSec.style.display = 'block';
+
+  // Update page title/subtitle and load data
+  const pageTitle = $('page-title');
+  const pageSubtitle = $('page-subtitle');
+
+  if (tab === 'dashboard') {
+    if (pageTitle) pageTitle.textContent = 'Dashboard';
+    if (pageSubtitle) pageSubtitle.textContent = 'Overview of platform metrics, revenues, system performance, and tenant accounts.';
     loadDashboard();
-  } else {
-    document.querySelectorAll('.nav-btn')[1].classList.add('active');
-    $('page-title').textContent = 'Platform Activity';
-    $('section-activity').style.display = 'block';
+  } else if (tab === 'tenants') {
+    if (pageTitle) pageTitle.textContent = 'Tenants Workspace';
+    if (pageSubtitle) pageSubtitle.textContent = 'Manage active customer spaces, suspended accounts, and deleted tenants archive.';
+    switchTenantsSubtab('active');
+  } else if (tab === 'pricing') {
+    if (pageTitle) pageTitle.textContent = 'Platform Pricing & Billing';
+    if (pageSubtitle) pageSubtitle.textContent = 'Configure standard usage fees, signup credits, and manual adjustments rules.';
     loadPricing();
+  } else if (tab === 'analytics') {
+    if (pageTitle) pageTitle.textContent = 'Platform Analytics';
+    if (pageSubtitle) pageSubtitle.textContent = 'View system growth trends, call volume distribution, and booking performance.';
+    loadAnalytics();
+  } else if (tab === 'health') {
+    if (pageTitle) pageTitle.textContent = 'System Health & Logging';
+    if (pageSubtitle) pageSubtitle.textContent = 'Verify real-time services connectivity, run email SMTP server tests, and scan error logs.';
+    loadSystemHealth();
+  } else if (tab === 'activity') {
+    if (pageTitle) pageTitle.textContent = 'Platform Activity Logs';
+    if (pageSubtitle) pageSubtitle.textContent = 'Audit detailed records of administrative adjustments and track automated system transactions.';
+    switchActivitySubtab('audit');
+  }
+}
+
+function switchTenantsSubtab(sub) {
+  const activeBtn = $('subbtn-active-tenants');
+  const deletedBtn = $('subbtn-deleted-tenants');
+  const activePanel = $('subtab-active-tenants-panel');
+  const deletedPanel = $('subtab-deleted-tenants-panel');
+
+  if (activeBtn) activeBtn.classList.remove('active');
+  if (deletedBtn) deletedBtn.classList.remove('active');
+  if (activePanel) activePanel.style.display = 'none';
+  if (deletedPanel) deletedPanel.style.display = 'none';
+
+  if (sub === 'active') {
+    if (activeBtn) activeBtn.classList.add('active');
+    if (activePanel) activePanel.style.display = 'block';
+    loadDashboard();
+  } else if (sub === 'deleted') {
+    if (deletedBtn) deletedBtn.classList.add('active');
+    if (deletedPanel) deletedPanel.style.display = 'block';
+    loadDeletedTenants();
+  }
+}
+
+function switchActivitySubtab(sub) {
+  const auditBtn = $('subbtn-audit-logs');
+  const emailBtn = $('subbtn-email-logs');
+  const auditPanel = $('subtab-audit-logs-panel');
+  const emailPanel = $('subtab-email-logs-panel');
+
+  if (auditBtn) auditBtn.classList.remove('active');
+  if (emailBtn) emailBtn.classList.remove('active');
+  if (auditPanel) auditPanel.style.display = 'none';
+  if (emailPanel) emailPanel.style.display = 'none';
+
+  if (sub === 'audit') {
+    if (auditBtn) auditBtn.classList.add('active');
+    if (auditPanel) auditPanel.style.display = 'block';
     loadAuditLogs();
+  } else if (sub === 'email') {
+    if (emailBtn) emailBtn.classList.add('active');
+    if (emailPanel) emailPanel.style.display = 'block';
+    loadPlatformEmailLogs();
   }
 }
 
@@ -916,8 +1367,17 @@ async function saveNewTenant(e){
     const data = await res.json();
     if(res.ok) {
       let msg = `Tenant "${name}" created successfully`;
-      if(data.invite && data.invite.email) msg += ` — invite sent to ${data.invite.email}`;
-      toast(msg);
+      if(data.invite) {
+        if(data.invite.status === 'invited') {
+          msg += ` — invite sent to ${data.invite.email}`;
+          toast(msg);
+        } else if(data.invite.status === 'failed') {
+          msg += ` BUT invite failed: ${data.invite.error}`;
+          toast(msg, 'error');
+        }
+      } else {
+        toast(msg);
+      }
       closeCreateModal();
       loadDashboard();
     } else {
@@ -1060,8 +1520,8 @@ async function saveTenantBranding(e) {
   const email = $('ub-email').value.trim();
   const website = $('ub-website').value.trim();
   
-  const logoFile = $('ub-logo-file').dataset.uploadedUrl || null;
-  const faviconFile = $('ub-favicon-file').dataset.uploadedUrl || null;
+  const logoFile = $('ub-logo-file')?.dataset?.uploadedUrl || null;
+  const faviconFile = $('ub-favicon-file')?.dataset?.uploadedUrl || null;
 
   try {
     const res = await fetch(`/api/super-admin/tenants/${activeTenantId}`, {
@@ -1145,7 +1605,8 @@ async function saveTenantApiKeys(e) {
   
   const values = {};
   keys.forEach(k => {
-    const val = $(`key-${k}`).value.trim();
+    const el = $(`key-${k}`);
+    const val = el ? el.value.trim() : '';
     if(val) values[k] = val;
   });
 
@@ -1239,6 +1700,7 @@ async function loadTenantUsage() {
 
 async function loadTenantAuditLogs() {
   const container = $('tenant-audit-logs-container');
+  if (!container) return;
   container.innerHTML = '<div style="padding:20px; text-align:center"><span class="spinner"></span></div>';
   
   try {
@@ -1267,54 +1729,67 @@ async function loadTenantAuditLogs() {
   }
 }
 
-async function loadAuditLogs() {
-  const container = $('platform-audit-logs');
-  container.innerHTML = '<div style="padding:20px; text-align:center"><span class="spinner"></span></div>';
-  
-  try {
-    const res = await fetch('/api/super-admin/audit-logs');
-    if(res.ok) {
-      const data = await res.json();
-      if(!data.length) {
-        container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--muted)">No platform logs found.</div>';
-        return;
-      }
-      container.innerHTML = data.map(l => {
-        const t = tenantsData.find(x => x.id === l.tenant_id);
-        const name = t ? t.company_name : `Tenant ID: ${l.tenant_id}`;
-        return `<div class="audit-log-item">
-          <div class="audit-log-meta">
-            <span><strong>${esc(l.action)}</strong> (Tenant: ${esc(name)})</span>
-            <span>${fmtTs(l.timestamp)}</span>
-          </div>
-          <div>User: ${esc(l.user_email || 'System')}</div>
-          ${l.detail ? `<div class="audit-log-detail">${esc(l.detail)}</div>` : ''}
-        </div>`;
-      }).join('');
-    } else {
-      container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--danger)">Failed to load platform activity.</div>';
-    }
-  } catch (err) {
-    container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--danger)">Network error loading activity logs.</div>';
-  }
-}
-
 async function changeStatus(id, action) {
   const t = tenantsData.find(x => x.id === id);
   if(!t) return;
   
-  if(!confirm(`Are you sure you want to ${action} tenant "${t.company_name}"?`)) return;
+  let body = null;
+  if (action === 'suspend') {
+    const reason = prompt(`Enter suspension reason for "${t.company_name}":`);
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) {
+      toast('Suspension reason is required', 'error');
+      return;
+    }
+    body = JSON.stringify({ reason: reason.trim(), notes: 'Suspended via Super Admin console', effective_immediately: true });
+  } else {
+    if(!confirm(`Are you sure you want to activate tenant "${t.company_name}"?`)) return;
+  }
 
   try {
-    const res = await fetch(`/api/super-admin/tenants/${id}/${action}`, {method: 'POST'});
+    const options = {
+      method: 'POST',
+      headers: body ? { 'Content-Type': 'application/json' } : {}
+    };
+    if (body) options.body = body;
+
+    const res = await fetch(`/api/super-admin/tenants/${id}/${action}`, options);
     if(res.ok) {
       toast(`Tenant "${t.company_name}" successfully ${action === 'suspend' ? 'suspended' : 'activated'}`);
       loadDashboard();
     } else {
-      toast('Failed to change status', 'error');
+      const err = await res.json().catch(() => ({}));
+      toast(err.detail || 'Failed to update tenant status', 'error');
     }
   } catch (err) {
     toast('Network error changing status', 'error');
+  }
+}
+
+async function deleteTenant(id) {
+  const t = tenantsData.find(x => x.id === id);
+  if (!t) return;
+  const reason = prompt(`Are you sure you want to delete tenant "${t.company_name}"? Please provide a reason:`);
+  if (reason === null) return; // cancelled
+  if (!reason.trim()) {
+    toast('A reason is required to delete a tenant', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/super-admin/tenants/${id}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason.trim() })
+    });
+    if (res.ok) {
+      toast(`Tenant "${t.company_name}" successfully deleted`);
+      loadDashboard();
+    } else {
+      toast('Failed to delete tenant', 'error');
+    }
+  } catch (err) {
+    toast('Network error during deletion', 'error');
   }
 }
 
@@ -1341,11 +1816,29 @@ async function loadPricing() {
     const res = await fetch('/api/super-admin/pricing');
     if(res.ok) {
       const data = await res.json();
-      $('price-call-attempt').value = (data.price_per_call_attempt ?? 0).toFixed(2);
-      $('price-appointment').value  = (data.price_per_appointment  ?? 0).toFixed(2);
+      
+      const setVal = (id, val) => {
+        const el = $(id);
+        if (el) el.value = val !== undefined && val !== null ? parseFloat(val).toFixed(2) : '0.00';
+      };
+
+      setVal('price-outbound-attempt', data.price_per_outbound_call_attempt);
+      setVal('price-connected-call', data.price_per_connected_call);
+      setVal('price-minute', data.price_per_minute);
+      setVal('price-inbound-call', data.price_per_inbound_call);
+      setVal('price-appointment', data.price_per_appointment);
+      setVal('price-calendar-sync', data.price_per_calendar_sync);
+      setVal('price-sms', data.price_per_sms);
+      setVal('price-email', data.price_per_email);
+      setVal('price-whatsapp', data.price_per_whatsapp);
+      setVal('price-ai-minute', data.price_ai_per_minute);
+      setVal('price-realtime-session', data.price_realtime_session);
+      setVal('price-signup-credits', data.default_signup_credits);
+      setVal('price-trial-credits', data.trial_credits);
+      setVal('price-manual-credits', data.manual_adjustment_credits);
     }
   } catch(err) {
-    /* non-fatal */
+    console.error("loadPricing error:", err);
   }
 }
 
@@ -1355,33 +1848,576 @@ async function savePricingForm(e) {
 }
 
 async function savePricing() {
-  const attempt = parseFloat($('price-call-attempt').value || 0);
-  const appt    = parseFloat($('price-appointment').value || 0);
+  const getVal = (id) => {
+    const el = $(id);
+    return el ? parseFloat(el.value || 0) : 0.0;
+  };
+
+  const payload = {
+    price_per_outbound_call_attempt: getVal('price-outbound-attempt'),
+    price_per_connected_call: getVal('price-connected-call'),
+    price_per_minute: getVal('price-minute'),
+    price_per_inbound_call: getVal('price-inbound-call'),
+    price_per_appointment: getVal('price-appointment'),
+    price_per_calendar_sync: getVal('price-calendar-sync'),
+    price_per_sms: getVal('price-sms'),
+    price_per_email: getVal('price-email'),
+    price_per_whatsapp: getVal('price-whatsapp'),
+    price_ai_per_minute: getVal('price-ai-minute'),
+    price_realtime_session: getVal('price-realtime-session'),
+    default_signup_credits: getVal('price-signup-credits'),
+    trial_credits: getVal('price-trial-credits'),
+    manual_adjustment_credits: getVal('price-manual-credits')
+  };
+
   try {
     const res = await fetch('/api/super-admin/pricing', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        price_per_call_attempt: attempt,
-        price_per_appointment: appt
-      })
+      body: JSON.stringify(payload)
     });
     if(res.ok) {
-      toast('Platform pricing saved');
+      toast('Platform pricing saved successfully');
+      loadPricing();
     } else {
       toast('Failed to save pricing', 'error');
     }
   } catch(err) {
+    console.error("savePricing error:", err);
     toast('Network error saving pricing', 'error');
   }
 }
 
 function clearUploadedFile(fileInputId, statusId, clearBtnId) {
   const fileInput = $(fileInputId);
-  fileInput.value = '';
-  delete fileInput.dataset.uploadedUrl;
-  $(statusId).textContent = '';
-  $(clearBtnId).style.display = 'none';
+  if (fileInput) {
+    fileInput.value = '';
+    delete fileInput.dataset.uploadedUrl;
+  }
+  const status = $(statusId);
+  if (status) status.textContent = '';
+  const clearBtn = $(clearBtnId);
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+// ── Deleted Tenants Archive ──
+let deletedTenantsData = [];
+
+async function loadDeletedTenants() {
+  try {
+    const res = await fetch('/api/super-admin/deleted-tenants');
+    if (res.ok) {
+      const list = await res.json();
+      deletedTenantsData = Array.isArray(list) ? list : [];
+      renderDeletedTenants();
+    } else {
+      toast('Failed to load deleted tenants archive', 'error');
+    }
+  } catch (err) {
+    console.error("loadDeletedTenants error:", err);
+    toast('Network error loading deleted tenants', 'error');
+  }
+}
+
+function renderDeletedTenants() {
+  const tb = $('deleted-tenant-tbody');
+  if (!tb) return;
+  const q = ($('deleted-tenant-search')?.value || '').toLowerCase();
+  
+  const filtered = deletedTenantsData.filter(t => {
+    return (t.tenant_name || '').toLowerCase().includes(q) || (t.slug || '').toLowerCase().includes(q);
+  });
+  
+  if (!filtered.length) {
+    tb.innerHTML = '<tr class="empty-row"><td colspan="8">No archived tenants found.</td></tr>';
+    return;
+  }
+  
+  tb.innerHTML = filtered.map(t => {
+    return `<tr>
+      <td><strong>${esc(t.tenant_name)}</strong></td>
+      <td style="font-family:var(--mono)">${esc(t.slug)}</td>
+      <td style="color:var(--muted)">${fmtTs(t.deleted_at)}</td>
+      <td>${esc(t.deleted_by || 'System')}</td>
+      <td>${esc(t.deletion_reason || '-')}</td>
+      <td>Rs ${(t.wallet_balance ?? 0).toFixed(2)}</td>
+      <td>${modeBadge(t.billing_mode)}</td>
+      <td>
+        <button class="btn btn-secondary btn-sm" onclick="restoreTenant('${t.tenant_id}')">Restore</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmPermanentDelete('${t.tenant_id}')">Delete Perm</button>
+        <button class="btn btn-secondary btn-sm" onclick="viewSnapshot('${t.tenant_id}')">View Snapshot</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function restoreTenant(id) {
+  const t = deletedTenantsData.find(x => x.tenant_id === id);
+  if (!t) return;
+  if (!confirm(`Are you sure you want to restore tenant "${t.tenant_name}"?`)) return;
+  
+  try {
+    const res = await fetch(`/api/super-admin/deleted-tenants/${id}/restore`, { method: 'POST' });
+    if (res.ok) {
+      toast(`Tenant "${t.tenant_name}" successfully restored`);
+      loadDeletedTenants();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      toast(err.detail || 'Failed to restore tenant', 'error');
+    }
+  } catch (err) {
+    toast('Network error restoring tenant', 'error');
+  }
+}
+
+async function confirmPermanentDelete(id) {
+  const t = deletedTenantsData.find(x => x.tenant_id === id);
+  if (!t) return;
+  if (!confirm(`WARNING: Are you sure you want to PERMANENTLY delete tenant "${t.tenant_name}"? This will delete all user accounts and cannot be undone.`)) return;
+  
+  try {
+    const res = await fetch(`/api/super-admin/deleted-tenants/${id}/permanent`, { method: 'DELETE' });
+    if (res.ok) {
+      toast(`Tenant "${t.tenant_name}" permanently deleted`);
+      loadDeletedTenants();
+    } else {
+      toast('Failed to permanently delete tenant', 'error');
+    }
+  } catch (err) {
+    toast('Network error permanently deleting tenant', 'error');
+  }
+}
+
+function viewSnapshot(id) {
+  const t = deletedTenantsData.find(x => x.tenant_id === id);
+  if (!t) return;
+  try {
+    const parsed = JSON.parse(t.full_snapshot_json);
+    const formatted = JSON.stringify(parsed, null, 2);
+    alert(`Snapshot for ${t.tenant_name}:\n\n${formatted}`);
+  } catch (err) {
+    alert(`Raw Snapshot data:\n\n${t.full_snapshot_json}`);
+  }
+}
+
+// ── Platform Analytics Charts ──
+let callsChart = null;
+let bookingsChart = null;
+let revenueChart = null;
+let growthChart = null;
+
+async function loadAnalytics() {
+  try {
+    const summary = await (await fetch('/api/super-admin/summary')).json();
+    
+    const labels = summary.chart_labels || [];
+    const callsData = summary.chart_calls || [];
+    const bookingsData = summary.chart_bookings || [];
+    const revenueData = summary.chart_revenue || [];
+    const growthData = summary.chart_growth || [];
+    
+    if (callsChart) callsChart.destroy();
+    if (bookingsChart) bookingsChart.destroy();
+    if (revenueChart) revenueChart.destroy();
+    if (growthChart) growthChart.destroy();
+    
+    const canvasCalls = $('chart-calls');
+    const canvasBookings = $('chart-bookings');
+    const canvasRevenue = $('chart-revenue');
+    const canvasGrowth = $('chart-growth');
+    
+    const ctxCalls = canvasCalls ? canvasCalls.getContext('2d') : null;
+    const ctxBookings = canvasBookings ? canvasBookings.getContext('2d') : null;
+    const ctxRevenue = canvasRevenue ? canvasRevenue.getContext('2d') : null;
+    const ctxGrowth = canvasGrowth ? canvasGrowth.getContext('2d') : null;
+    
+    if (ctxCalls) {
+      callsChart = new Chart(ctxCalls, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Total Calls Dispatched',
+            data: callsData,
+            borderColor: '#5B5BD6',
+            backgroundColor: 'rgba(91, 91, 214, 0.1)',
+            fill: true,
+            tension: 0.3,
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+      });
+    }
+
+    if (ctxBookings) {
+      bookingsChart = new Chart(ctxBookings, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Bookings Confirmed',
+            data: bookingsData,
+            backgroundColor: '#00b894',
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+      });
+    }
+
+    if (ctxRevenue) {
+      revenueChart = new Chart(ctxRevenue, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Platform Revenue (Rs)',
+            data: revenueData,
+            borderColor: '#22c55e',
+            backgroundColor: 'rgba(34, 197, 94, 0.05)',
+            fill: true,
+            tension: 0.2,
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+    }
+
+    if (ctxGrowth) {
+      growthChart = new Chart(ctxGrowth, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'New Tenant Accounts',
+            data: growthData,
+            backgroundColor: '#3b82f6',
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+      });
+    }
+  } catch (err) {
+    console.error("loadAnalytics error:", err);
+    toast('Failed to load analytics data', 'error');
+  }
+}
+
+function initializeCharts() {
+  loadAnalytics();
+}
+
+// ── System Health & Error logs ──
+async function loadSystemHealth() {
+  try {
+    const res = await fetch('/api/health');
+    if (res.ok) {
+      const data = await res.json();
+      const sipState = data.services?.sip?.state;
+      const smtpStatus = $('health-smtp-status');
+      if (smtpStatus) {
+        if (sipState === 'configured') {
+          smtpStatus.textContent = 'ACTIVE';
+          smtpStatus.style.color = 'var(--success)';
+        } else {
+          smtpStatus.textContent = 'NOT CONFIGURED';
+          smtpStatus.style.color = 'var(--muted)';
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Health check failed:", err);
+  }
+
+  const tb = $('error-logs-tbody');
+  if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5"><span class="spinner"></span> Loading error logs...</td></tr>';
+
+  try {
+    const res = await fetch('/api/logs');
+    if (res.ok) {
+      const list = await res.json();
+      const logs = Array.isArray(list) ? list : [];
+      if (!logs.length) {
+        if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5">No system errors logged.</td></tr>';
+        return;
+      }
+      if (tb) {
+        tb.innerHTML = logs.map(l => {
+          let lvlColor = 'var(--muted)';
+          if (l.level === 'error') lvlColor = 'var(--danger)';
+          if (l.level === 'warning') lvlColor = 'var(--warn)';
+          
+          return `<tr>
+            <td style="color:var(--muted)">${fmtTs(l.timestamp)}</td>
+            <td><strong>${esc(l.source)}</strong></td>
+            <td><span class="badge" style="background:none; border:1px solid ${lvlColor}; color:${lvlColor}; padding:2px 6px;">${esc(l.level)}</span></td>
+            <td>${esc(l.message)}</td>
+            <td style="font-family:var(--mono); font-size:11px;" title="${esc(l.detail)}">${esc(l.detail || '-')}</td>
+          </tr>`;
+        }).join('');
+      }
+    } else {
+      if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5" style="color:var(--danger)">Failed to load error logs.</td></tr>';
+    }
+  } catch (err) {
+    console.error("loadSystemHealth logs error:", err);
+    if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5" style="color:var(--danger)">Network error loading error logs.</td></tr>';
+  }
+}
+
+async function clearSystemErrors() {
+  if (!confirm('Are you sure you want to clear all error logs?')) return;
+  try {
+    const res = await fetch('/api/logs', { method: 'DELETE' });
+    if (res.ok) {
+      toast('Error logs cleared successfully');
+      loadSystemHealth();
+    } else {
+      toast('Failed to clear error logs', 'error');
+    }
+  } catch (err) {
+    toast('Network error clearing error logs', 'error');
+  }
+}
+
+async function sendTestEmail() {
+  const emailInput = $('test-email-to');
+  const statusDiv = $('test-email-status');
+  if (!emailInput || !statusDiv) return;
+
+  const email = emailInput.value.trim();
+  if (!email || !email.includes('@')) {
+    statusDiv.textContent = 'Please enter a valid email address';
+    statusDiv.style.color = 'var(--danger)';
+    return;
+  }
+
+  statusDiv.textContent = 'Sending test email...';
+  statusDiv.style.color = 'var(--muted)';
+
+  try {
+    const res = await fetch('/api/email-booking/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient_email: email })
+    });
+    if (res.ok) {
+      statusDiv.textContent = 'Test email sent successfully! Check recipient inbox and email logs.';
+      statusDiv.style.color = 'var(--success)';
+      emailInput.value = '';
+    } else {
+      const err = await res.json();
+      statusDiv.textContent = `Failed: ${err.detail || 'check SMTP configuration'}`;
+      statusDiv.style.color = 'var(--danger)';
+    }
+  } catch (err) {
+    statusDiv.textContent = 'Network error sending test email';
+    statusDiv.style.color = 'var(--danger)';
+  }
+}
+
+// ── Platform Activity Audit Logs & Email Logs ──
+let auditLogsData = [];
+
+async function loadAuditLogs() {
+  const tb = $('audit-logs-tbody');
+  if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5"><span class="spinner"></span> Loading audit logs...</td></tr>';
+
+  try {
+    const res = await fetch('/api/super-admin/audit-logs');
+    if (res.ok) {
+      const data = await res.json();
+      auditLogsData = Array.isArray(data) ? data : [];
+      
+      // Populate tenant filter dropdown dynamically
+      const tenantFilter = $('audit-tenant-filter');
+      if (tenantFilter) {
+        tenantFilter.innerHTML = '<option value="">All Tenants</option>';
+        const uniqueTenants = [...new Set(auditLogsData.map(l => l.tenant_id))];
+        uniqueTenants.forEach(tid => {
+          const t = tenantsData.find(x => x.id === tid);
+          const name = t ? t.company_name : `Tenant ID: ${tid}`;
+          const option = document.createElement('option');
+          option.value = tid;
+          option.textContent = name;
+          tenantFilter.appendChild(option);
+        });
+      }
+
+      renderAuditLogs();
+    } else {
+      if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5" style="color:var(--danger)">Failed to load audit logs.</td></tr>';
+    }
+  } catch (err) {
+    console.error("loadAuditLogs error:", err);
+    if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="5" style="color:var(--danger)">Network error loading audit logs.</td></tr>';
+  }
+}
+
+function renderAuditLogs() {
+  const tb = $('audit-logs-tbody');
+  if (!tb) return;
+
+  const q = ($('audit-search')?.value || '').toLowerCase();
+  const dateFilter = $('audit-date-filter')?.value;
+  const tenantFilter = $('audit-tenant-filter')?.value;
+
+  const filtered = auditLogsData.filter(l => {
+    const t = tenantsData.find(x => x.id === l.tenant_id);
+    const tenantName = t ? t.company_name : `Tenant ID: ${l.tenant_id}`;
+    
+    const queryMatch = (l.action || '').toLowerCase().includes(q) 
+      || (l.user_email || '').toLowerCase().includes(q) 
+      || (l.detail || '').toLowerCase().includes(q)
+      || tenantName.toLowerCase().includes(q);
+      
+    const dateMatch = !dateFilter || (l.timestamp || '').startsWith(dateFilter);
+    const tenantMatch = !tenantFilter || l.tenant_id === tenantFilter;
+    
+    return queryMatch && dateMatch && tenantMatch;
+  });
+
+  if (!filtered.length) {
+    tb.innerHTML = '<tr class="empty-row"><td colspan="5">No platform activity found.</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = filtered.map(l => {
+    const t = tenantsData.find(x => x.id === l.tenant_id);
+    const name = t ? t.company_name : `Tenant ID: ${l.tenant_id}`;
+    
+    return `<tr>
+      <td style="color:var(--muted)">${fmtTs(l.timestamp)}</td>
+      <td><strong>${esc(name)}</strong></td>
+      <td>${esc(l.user_email || 'System')}</td>
+      <td><strong>${esc(l.action)}</strong></td>
+      <td style="font-family:var(--mono); font-size:11px;" title="${esc(l.detail)}">${esc(l.detail || '-')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filterAuditLogs() {
+  renderAuditLogs();
+}
+
+function exportAuditLogsCSV() {
+  if (auditLogsData.length === 0) {
+    toast('No audit logs available to export', 'error');
+    return;
+  }
+  
+  const headers = ['Timestamp', 'Tenant ID', 'Tenant Name', 'User', 'Action', 'Detail'];
+  const rows = auditLogsData.map(l => {
+    const t = tenantsData.find(x => x.id === l.tenant_id);
+    const name = t ? t.company_name : `Tenant ID: ${l.tenant_id}`;
+    return [
+      l.timestamp || '',
+      l.tenant_id || '',
+      name,
+      l.user_email || 'System',
+      l.action || '',
+      l.detail || ''
+    ];
+  });
+  
+  let csvContent = "data:text/csv;charset=utf-8," 
+    + [headers.join(','), ...rows.map(e => e.map(val => `"${String(val).replace(/"/g, '""')}"`).join(','))].join('\n');
+    
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement("a");
+  link.setAttribute("href", encodedUri);
+  link.setAttribute("download", `platform_audit_logs_${new Date().toISOString().slice(0,10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// Email delivery logs
+let emailLogsData = [];
+
+async function loadPlatformEmailLogs() {
+  const tb = $('email-logs-tbody');
+  if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="6"><span class="spinner"></span> Loading email logs...</td></tr>';
+  
+  try {
+    const res = await fetch('/api/super-admin/email-logs');
+    if (res.ok) {
+      const list = await res.json();
+      emailLogsData = Array.isArray(list) ? list : [];
+      renderEmailLogs();
+    } else {
+      if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="6" style="color:var(--danger)">Failed to load email logs.</td></tr>';
+    }
+  } catch (err) {
+    console.error("loadPlatformEmailLogs error:", err);
+    if (tb) tb.innerHTML = '<tr class="empty-row"><td colspan="6" style="color:var(--danger)">Network error loading email logs.</td></tr>';
+  }
+}
+
+function renderEmailLogs() {
+  const tb = $('email-logs-tbody');
+  if (!tb) return;
+
+  const q = ($('email-search')?.value || '').toLowerCase();
+  const statusFilter = $('email-status-filter')?.value;
+
+  const filtered = emailLogsData.filter(l => {
+    const queryMatch = (l.recipient || '').toLowerCase().includes(q) || (l.subject || '').toLowerCase().includes(q);
+    const statusMatch = !statusFilter || l.status === statusFilter;
+    return queryMatch && statusMatch;
+  });
+
+  if (!filtered.length) {
+    tb.innerHTML = '<tr class="empty-row"><td colspan="6">No email logs found.</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = filtered.map(l => {
+    let provider = "SMTP";
+    if (l.subject && l.subject.toLowerCase().includes("invite")) {
+      provider = "Supabase";
+    }
+    let failureReason = l.error_message || "-";
+    let statusColor = 'var(--muted)';
+    if (l.status === 'delivered' || l.status === 'sent') statusColor = 'var(--success)';
+    if (l.status === 'failed') statusColor = 'var(--danger)';
+    
+    return `<tr>
+      <td style="color:var(--muted)">${fmtTs(l.timestamp)}</td>
+      <td><strong>${esc(l.recipient)}</strong></td>
+      <td><span class="badge" style="font-family:var(--mono); font-size:11px; padding: 2px 6px;">${esc(l.tenant_id)}</span></td>
+      <td><span style="color:${statusColor}; font-weight:600; text-transform:uppercase; font-size:11px;">${esc(l.status)}</span></td>
+      <td><span class="badge" style="padding: 2px 6px;">${esc(provider)}</span></td>
+      <td style="font-family:var(--mono); font-size:11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(failureReason)}">${esc(failureReason)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filterEmailLogs() {
+  renderEmailLogs();
 }
 
 // Run bootstrap auth on load

@@ -52,6 +52,8 @@ from db import (
     update_tenant_branding, update_tenant_status,
     # Production SaaS additions
     get_platform_pricing, deduct_wallet_for_event, invite_tenant_admin, update_user_profile,
+    soft_delete_tenant, restore_tenant, permanently_delete_tenant, list_deleted_tenants,
+    get_all_email_delivery_logs, log_email_delivery,
 )
 from db import get_user_by_email
 from prompts import DEFAULT_SYSTEM_PROMPT
@@ -262,6 +264,18 @@ async def admin_auth_middleware(request: Request, call_next):
                             imp_tenant = request.cookies.get("impersonated_tenant_id", "").strip()
                             if imp_tenant:
                                 tenant_id = imp_tenant
+                                
+                    # Suspension check for non-super-admins
+                    if user_role != "SUPER_ADMIN":
+                        tenant = await get_tenant(tenant_id)
+                        if tenant and tenant.get("status") == "SUSPENDED":
+                            reason = tenant.get("suspension_reason") or "Payment overdue"
+                            msg = f"Your account is currently suspended. Reason: {reason}. Please contact support."
+                            if is_protected_page:
+                                import urllib.parse
+                                return RedirectResponse(url=f"/ui/login.html?error={urllib.parse.quote(msg)}", status_code=303)
+                            else:
+                                return JSONResponse({"detail": msg}, status_code=403)
                 else:
                     logger.info("[admin_auth_middleware] User record not found in database.")
             else:
@@ -469,8 +483,20 @@ class TenantRequest(BaseModel):
 
 
 class PricingRequest(BaseModel):
-    price_per_call_attempt: float = 0.0
+    price_per_outbound_call_attempt: float = 0.0
+    price_per_connected_call: float = 0.0
+    price_per_minute: float = 0.0
+    price_per_inbound_call: float = 0.0
     price_per_appointment: float = 0.0
+    price_per_calendar_sync: float = 0.0
+    price_per_sms: float = 0.0
+    price_per_email: float = 0.0
+    price_per_whatsapp: float = 0.0
+    price_ai_per_minute: float = 0.0
+    price_realtime_session: float = 0.0
+    default_signup_credits: float = 0.0
+    trial_credits: float = 0.0
+    manual_adjustment_credits: float = 0.0
 
 
 class TenantUpdateRequest(BaseModel):
@@ -509,6 +535,12 @@ class ProfileUpdateRequest(BaseModel):
 class WalletRequest(BaseModel):
     amount: float
     reason: str = ""
+
+
+class SuspendRequest(BaseModel):
+    reason: str
+    notes: Optional[str] = ""
+    effective_immediately: bool = True
 
 
 class TenantApiKeysRequest(BaseModel):
@@ -704,17 +736,31 @@ async def api_super_admin_get_pricing():
 @app.post("/api/super-admin/pricing")
 async def api_super_admin_set_pricing(req: PricingRequest):
     _require_super_admin()
-    # Store under default tenant settings
     tokens = set_request_context(DEFAULT_TENANT_ID, get_current_user_email(), "SUPER_ADMIN")
     try:
-        await set_setting("PRICE_PER_CALL_ATTEMPT", str(req.price_per_call_attempt))
+        await set_setting("PRICE_PER_OUTBOUND_CALL_ATTEMPT", str(req.price_per_outbound_call_attempt))
+        # Keep legacy field synced
+        await set_setting("PRICE_PER_CALL_ATTEMPT", str(req.price_per_outbound_call_attempt))
+        await set_setting("PRICE_PER_CONNECTED_CALL", str(req.price_per_connected_call))
+        await set_setting("PRICE_PER_MINUTE", str(req.price_per_minute))
+        await set_setting("PRICE_PER_INBOUND_CALL", str(req.price_per_inbound_call))
         await set_setting("PRICE_PER_APPOINTMENT", str(req.price_per_appointment))
+        await set_setting("PRICE_PER_CALENDAR_SYNC", str(req.price_per_calendar_sync))
+        await set_setting("PRICE_PER_SMS", str(req.price_per_sms))
+        await set_setting("PRICE_PER_EMAIL", str(req.price_per_email))
+        await set_setting("PRICE_PER_WHATSAPP", str(req.price_per_whatsapp))
+        await set_setting("PRICE_AI_PER_MINUTE", str(req.price_ai_per_minute))
+        await set_setting("PRICE_REALTIME_SESSION", str(req.price_realtime_session))
+        await set_setting("DEFAULT_SIGNUP_CREDITS", str(req.default_signup_credits))
+        await set_setting("TRIAL_CREDITS", str(req.trial_credits))
+        await set_setting("MANUAL_ADJUSTMENT_CREDITS", str(req.manual_adjustment_credits))
     finally:
         reset_request_context(tokens)
+    
     await audit_log(
         "Platform Pricing Updated",
         DEFAULT_TENANT_ID,
-        {"price_per_call_attempt": req.price_per_call_attempt, "price_per_appointment": req.price_per_appointment},
+        req.dict(),
         get_current_user_email(),
     )
     return {"status": "saved", "pricing": await get_platform_pricing()}
@@ -742,20 +788,80 @@ async def api_super_admin_update_tenant(tenant_id: str, req: TenantUpdateRequest
 
 
 @app.post("/api/super-admin/tenants/{tenant_id}/suspend")
-async def api_super_admin_suspend_tenant(tenant_id: str):
+async def api_super_admin_suspend_tenant(tenant_id: str, req: SuspendRequest):
     _require_super_admin()
-    tenant = await update_tenant_status(tenant_id, "SUSPENDED", get_current_user_email())
+    tenant = await update_tenant(
+        tenant_id,
+        {
+            "status": "SUSPENDED",
+            "is_active": False,
+            "suspension_reason": req.reason,
+            "suspension_notes": req.notes,
+        },
+        get_current_user_email()
+    )
     if not tenant:
         raise HTTPException(404, "Tenant not found")
+        
+    await audit_log(
+        "Tenant Suspended",
+        tenant_id,
+        {"reason": req.reason, "notes": req.notes, "effective_immediately": req.effective_immediately},
+        get_current_user_email()
+    )
+    
+    # Notify tenant admin by email
+    db = await _adb()
+    user_email = None
+    try:
+        users_res = await db.table("users").select("email").eq("tenant_id", tenant_id).eq("role", "TENANT_ADMIN").limit(1).execute()
+        if users_res.data:
+            user_email = users_res.data[0].get("email")
+    except Exception:
+        pass
+        
+    if not user_email:
+        user_email = tenant.get("support_email")
+        
+    if user_email:
+        from email_manager import send_email_async
+        subject = "Account Suspended - OutboundAI"
+        body = f"Hi,\n\nYour OutboundAI tenant account '{tenant.get('company_name')}' has been suspended.\n\nReason: {req.reason}\n\nNotes: {req.notes or 'No details provided.'}\n\nNext Steps:\nPlease resolve any pending invoices or contact support immediately to reactivate your workspace.\n\nSupport Contact: {tenant.get('support_email') or 'support@outboundai.com'}\n\nThank you,\nOutboundAI Billing Team"
+        asyncio.create_task(
+            send_email_async(
+                to_email=user_email,
+                subject=subject,
+                body=body,
+                booking_id="SUSPEND",
+                reply_to=tenant.get('support_email') or 'support@outboundai.com'
+            )
+        )
+        
     return {"status": "suspended", "tenant": tenant}
 
 
 @app.post("/api/super-admin/tenants/{tenant_id}/activate")
 async def api_super_admin_activate_tenant(tenant_id: str):
     _require_super_admin()
-    tenant = await update_tenant_status(tenant_id, "ACTIVE", get_current_user_email())
+    tenant = await update_tenant(
+        tenant_id,
+        {
+            "status": "ACTIVE",
+            "is_active": True,
+            "suspension_reason": None,
+            "suspension_notes": None,
+        },
+        get_current_user_email()
+    )
     if not tenant:
         raise HTTPException(404, "Tenant not found")
+        
+    await audit_log(
+        "Tenant Activated",
+        tenant_id,
+        {"status": "ACTIVE"},
+        get_current_user_email()
+    )
     return {"status": "active", "tenant": tenant}
 
 
@@ -845,6 +951,115 @@ async def api_super_admin_deduct_wallet(tenant_id: str, req: WalletRequest):
         return {"status": "updated", "tenant": tenant}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+class DeleteTenantRequest(BaseModel):
+    reason: str
+
+
+@app.get("/api/super-admin/deleted-tenants")
+async def api_get_deleted_tenants():
+    _require_super_admin()
+    return await list_deleted_tenants()
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/delete")
+async def api_delete_tenant(tenant_id: str, req: DeleteTenantRequest):
+    _require_super_admin()
+    try:
+        await soft_delete_tenant(tenant_id, get_current_user_email(), req.reason)
+        return {"status": "success", "message": f"Tenant {tenant_id} soft deleted."}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/api/super-admin/deleted-tenants/{tenant_id}/restore")
+async def api_restore_tenant(tenant_id: str):
+    _require_super_admin()
+    try:
+        await restore_tenant(tenant_id)
+        return {"status": "success", "message": f"Tenant {tenant_id} restored successfully."}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.delete("/api/super-admin/deleted-tenants/{tenant_id}/permanent")
+async def api_permanently_delete_tenant(tenant_id: str):
+    _require_super_admin()
+    try:
+        await permanently_delete_tenant(tenant_id)
+        return {"status": "success", "message": f"Tenant {tenant_id} permanently deleted."}
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.get("/api/super-admin/email-logs")
+async def api_get_email_logs(limit: int = 200):
+    _require_super_admin()
+    return await get_all_email_delivery_logs(limit)
+
+
+class TransferOwnershipRequest(BaseModel):
+    email: str
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/users")
+async def api_get_tenant_users(tenant_id: str):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        res = await db.table("users").select("*").eq("tenant_id", tenant_id).execute()
+        return res.data or []
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/calls")
+async def api_get_tenant_calls(tenant_id: str):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        res = await db.table("call_logs").select("*").eq("tenant_id", tenant_id).order("timestamp", desc=True).limit(50).execute()
+        return res.data or []
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.get("/api/super-admin/tenants/{tenant_id}/bookings")
+async def api_get_tenant_bookings(tenant_id: str):
+    _require_super_admin()
+    db = await _adb()
+    try:
+        res = await db.table("appointments").select("*").eq("tenant_id", tenant_id).order("date", desc=True).execute()
+        return res.data or []
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/api/super-admin/tenants/{tenant_id}/transfer-ownership")
+async def api_transfer_ownership(tenant_id: str, req: TransferOwnershipRequest):
+    _require_super_admin()
+    db = await _adb()
+    email_clean = req.email.strip().lower()
+    try:
+        res = await db.table("users").select("*").eq("tenant_id", tenant_id).eq("email", email_clean).maybe_single().execute()
+        user = res.data if res and getattr(res, "data", None) else None
+        if not user:
+            raise HTTPException(400, "User must belong to the tenant before transferring ownership.")
+            
+        await db.table("users").update({"role": "TENANT_USER"}).eq("tenant_id", tenant_id).eq("role", "TENANT_ADMIN").execute()
+        await db.table("users").update({"role": "TENANT_ADMIN"}).eq("id", user["id"]).execute()
+        
+        await audit_log("Ownership Transferred", tenant_id, {"new_owner_email": email_clean}, get_current_user_email())
+        return {"status": "success", "message": f"Ownership transferred to {email_clean}."}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
 
 
 @app.post("/api/wallet/add")

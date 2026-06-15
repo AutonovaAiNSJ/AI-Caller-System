@@ -5,7 +5,7 @@ import logging
 import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from db import get_setting, log_error
+from db import get_setting, log_error, log_email_delivery, get_current_tenant_id
 
 logger = logging.getLogger("email-manager")
 
@@ -90,6 +90,7 @@ def _send_email_sync(smtp_host, smtp_port, smtp_username, smtp_password, smtp_fr
 
 
 async def send_email_async(to_email: str, subject: str, body: str, booking_id: str = "", reply_to: str = "") -> bool:
+    tenant_id = get_current_tenant_id()
     try:
         smtp_host = await get_setting("SMTP_HOST", "") or os.getenv("SMTP_HOST", "")
         smtp_port = await get_setting("SMTP_PORT", "") or os.getenv("SMTP_PORT", "")
@@ -106,6 +107,7 @@ async def send_email_async(to_email: str, subject: str, body: str, booking_id: s
                 f"booking_id={booking_id or ''} recipient={_redact_email(to_email)} email_status=not_configured host_present={bool(smtp_host)} port_present={bool(smtp_port)} from_present={bool(smtp_from)}",
                 "warning"
             )
+            await log_email_delivery(to_email, subject, "failed", "", "SMTP settings incomplete", tenant_id)
             return False
 
         # Run synchronous blocking SMTP calls inside an executor thread so we don't freeze the event loop.
@@ -128,6 +130,7 @@ async def send_email_async(to_email: str, subject: str, body: str, booking_id: s
             f"booking_id={booking_id or ''} recipient={_redact_email(to_email)} email_status=sent subject={subject}",
             "info",
         )
+        await log_email_delivery(to_email, subject, "sent", "Email sent successfully", "", tenant_id)
         return True
     except Exception as exc:
         logger.exception("Failed to send email to %s", to_email)
@@ -137,4 +140,5 @@ async def send_email_async(to_email: str, subject: str, body: str, booking_id: s
             f"booking_id={booking_id or ''} recipient={_redact_email(to_email)} email_status=failed error={exc}",
             "error",
         )
+        await log_email_delivery(to_email, subject, "failed", "", str(exc), tenant_id)
         return False

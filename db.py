@@ -9,6 +9,8 @@ load_dotenv(".env", override=False)
 from datetime import datetime, timedelta
 from typing import Optional
 from collections import defaultdict
+from supabase_auth import AdminUserAttributes
+
 
 logger = logging.getLogger("db")
 
@@ -163,6 +165,17 @@ def init_db() -> None:
         db = _sdb()
         db.table("settings").select("key").limit(1).execute()
         print("[ok] Supabase connected")
+        
+        # Verify new tables
+        try:
+            db.table("deleted_tenants").select("tenant_id").limit(1).execute()
+        except Exception:
+            print("[warn] Table 'deleted_tenants' is missing. Please run phase 3 migration in Supabase Dashboard SQL Editor.")
+            
+        try:
+            db.table("email_delivery_logs").select("id").limit(1).execute()
+        except Exception:
+            print("[warn] Table 'email_delivery_logs' is missing. Please run phase 3 migration in Supabase Dashboard SQL Editor.")
     except Exception as exc:
         print(f"[warn] Supabase connection failed: {exc}")
         print("   Run supabase_schema.sql in your Supabase Dashboard -> SQL Editor")
@@ -297,6 +310,11 @@ async def get_all_settings() -> dict:
         "AUTO_SEND_BOOKING_EMAIL",
         "BOOKING_EMAIL_SUBJECT_TEMPLATE", "BOOKING_EMAIL_BODY_TEMPLATE",
         "BOOKING_EMAIL_REPLY_TO", "BOOKING_EMAIL_SIGNATURE",
+        "PRICE_PER_OUTBOUND_CALL_ATTEMPT", "PRICE_PER_CONNECTED_CALL", "PRICE_PER_MINUTE",
+        "PRICE_PER_INBOUND_CALL", "PRICE_PER_APPOINTMENT", "PRICE_PER_CALENDAR_SYNC",
+        "PRICE_PER_SMS", "PRICE_PER_EMAIL", "PRICE_PER_WHATSAPP",
+        "PRICE_AI_PER_MINUTE", "PRICE_REALTIME_SESSION",
+        "DEFAULT_SIGNUP_CREDITS", "TRIAL_CREDITS", "MANUAL_ADJUSTMENT_CREDITS",
     ]
     out: dict = {}
     for k in KNOWN_KEYS:
@@ -975,6 +993,18 @@ async def invite_tenant_admin(tenant_id: str, admin_email: str, invited_by: str 
     # Send Supabase invite email via Admin API
     app_url = os.getenv("APP_URL", "").strip() or os.getenv("SITE_URL", "").strip()
     if not app_url:
+        try:
+            await db.table("pending_invites").delete().eq("email", email_clean).execute()
+        except Exception:
+            pass
+        await log_email_delivery(
+            recipient=email_clean,
+            subject="Tenant Admin Invite",
+            status="FAILED",
+            provider_response="",
+            error_message="APP_URL not configured",
+            tenant_id=tenant_id
+        )
         raise RuntimeError("APP_URL not configured")
     redirect_url = f"{app_url.rstrip('/')}/ui/login.html"
 
@@ -984,6 +1014,14 @@ async def invite_tenant_admin(tenant_id: str, admin_email: str, invited_by: str 
             options={"redirect_to": redirect_url}
         )
         logger.info(f"Supabase invite sent to {email_clean} for tenant {tenant_id} (redirect to {redirect_url}): {invite_res}")
+        await log_email_delivery(
+            recipient=email_clean,
+            subject="Tenant Admin Invite",
+            status="SENT",
+            provider_response=str(invite_res) if invite_res else "Success",
+            error_message="",
+            tenant_id=tenant_id
+        )
     except Exception as exc:
         # Clean up the pending invite if Supabase rejects the email
         try:
@@ -991,6 +1029,14 @@ async def invite_tenant_admin(tenant_id: str, admin_email: str, invited_by: str 
         except Exception:
             pass
         logger.error(f"Supabase invite failed for {email_clean}: {exc}")
+        await log_email_delivery(
+            recipient=email_clean,
+            subject="Tenant Admin Invite",
+            status="FAILED",
+            provider_response="",
+            error_message=str(exc),
+            tenant_id=tenant_id
+        )
         raise ValueError(f"Failed to send invite email: {exc}")
 
     await audit_log("Tenant Admin Invited", tenant_id, {"admin_email": email_clean}, invited_by)
@@ -1050,6 +1096,11 @@ async def create_tenant(data: dict, user_email: str = "") -> dict:
         except Exception as exc:
             # Log but do not fail tenant creation — admin can invite separately
             await log_error("server", f"Auto-invite failed for {admin_email}: {exc}", level="warning")
+            invite_result = {
+                "status": "failed",
+                "email": admin_email,
+                "error": str(exc)
+            }
 
     return {**payload, "invite": invite_result}
 
@@ -1177,16 +1228,57 @@ async def get_platform_pricing() -> dict:
     """Read platform pricing settings from the default tenant's settings rows."""
     tokens = set_request_context(DEFAULT_TENANT_ID, "", "SUPER_ADMIN")
     try:
-        attempt = float(await get_setting("PRICE_PER_CALL_ATTEMPT", "0") or 0)
+        outbound_attempt = float(await get_setting("PRICE_PER_OUTBOUND_CALL_ATTEMPT", "0") or 0)
+        # Fallback to legacy PRICE_PER_CALL_ATTEMPT if new is not configured
+        if outbound_attempt == 0.0:
+            outbound_attempt = float(await get_setting("PRICE_PER_CALL_ATTEMPT", "0") or 0)
+            
+        connected_call = float(await get_setting("PRICE_PER_CONNECTED_CALL", "0") or 0)
+        per_minute = float(await get_setting("PRICE_PER_MINUTE", "0") or 0)
+        inbound_call = float(await get_setting("PRICE_PER_INBOUND_CALL", "0") or 0)
         appt = float(await get_setting("PRICE_PER_APPOINTMENT", "0") or 0)
+        sync = float(await get_setting("PRICE_PER_CALENDAR_SYNC", "0") or 0)
+        sms = float(await get_setting("PRICE_PER_SMS", "0") or 0)
+        email = float(await get_setting("PRICE_PER_EMAIL", "0") or 0)
+        whatsapp = float(await get_setting("PRICE_PER_WHATSAPP", "0") or 0)
+        ai_minute = float(await get_setting("PRICE_AI_PER_MINUTE", "0") or 0)
+        realtime_session = float(await get_setting("PRICE_REALTIME_SESSION", "0") or 0)
+        signup_credits = float(await get_setting("DEFAULT_SIGNUP_CREDITS", "0") or 0)
+        trial_credits = float(await get_setting("TRIAL_CREDITS", "0") or 0)
+        manual_credits = float(await get_setting("MANUAL_ADJUSTMENT_CREDITS", "0") or 0)
     except Exception:
-        attempt = 0.0
+        outbound_attempt = 0.0
+        connected_call = 0.0
+        per_minute = 0.0
+        inbound_call = 0.0
         appt = 0.0
+        sync = 0.0
+        sms = 0.0
+        email = 0.0
+        whatsapp = 0.0
+        ai_minute = 0.0
+        realtime_session = 0.0
+        signup_credits = 0.0
+        trial_credits = 0.0
+        manual_credits = 0.0
     finally:
         reset_request_context(tokens)
     return {
-        "price_per_call_attempt": attempt,
+        "price_per_call_attempt": outbound_attempt,
+        "price_per_outbound_call_attempt": outbound_attempt,
+        "price_per_connected_call": connected_call,
+        "price_per_minute": per_minute,
+        "price_per_inbound_call": inbound_call,
         "price_per_appointment": appt,
+        "price_per_calendar_sync": sync,
+        "price_per_sms": sms,
+        "price_per_email": email,
+        "price_per_whatsapp": whatsapp,
+        "price_ai_per_minute": ai_minute,
+        "price_realtime_session": realtime_session,
+        "default_signup_credits": signup_credits,
+        "trial_credits": trial_credits,
+        "manual_adjustment_credits": manual_credits,
     }
 
 
@@ -1268,20 +1360,171 @@ async def get_super_admin_summary() -> dict:
     active = [t for t in tenants if t.get("status") == "ACTIVE"]
     suspended = [t for t in tenants if t.get("status") == "SUSPENDED"]
     trial = [t for t in tenants if t.get("status") == "TRIAL"]
+    
+    # Count deleted tenants from deleted_tenants table
+    deleted_count = 0
     try:
-        calls = (await db.table("call_logs").select("id").execute()).data or []
-        campaigns = (await db.table("campaigns").select("id").execute()).data or []
-        appointments = (await db.table("appointments").select("id").execute()).data or []
+        res_del = await db.table("deleted_tenants").select("tenant_id", count="exact").execute()
+        deleted_count = getattr(res_del, "count", len(res_del.data or [])) or len(res_del.data or [])
     except Exception:
-        calls, campaigns, appointments = [], [], []
+        pass
+        
+    try:
+        calls_res = await db.table("call_logs").select("id, duration_seconds, timestamp, direction, outcome").execute()
+        calls = calls_res.data or []
+    except Exception:
+        calls = []
+        
+    try:
+        campaigns_res = await db.table("campaigns").select("id").execute()
+        campaigns = campaigns_res.data or []
+    except Exception:
+        campaigns = []
+        
+    try:
+        appointments_res = await db.table("appointments").select("id, status, created_at, date").execute()
+        appointments = appointments_res.data or []
+    except Exception:
+        appointments = []
+
+    # Calculate connected calls
+    connected_calls = sum(1 for c in calls if float(c.get("duration_seconds") or 0) > 0)
+    inbound_calls = sum(1 for c in calls if c.get("direction") == "inbound")
+    appointments_booked = sum(1 for a in appointments if a.get("status") == "booked")
+
+    # Fetch audit logs related to wallet deductions
+    try:
+        audit_res = await db.table("tenant_audit_logs").select("tenant_id, detail, action, timestamp").or_("action.eq.Wallet Auto-Deducted,action.eq.Wallet Updated").execute()
+        audit_rows = audit_res.data or []
+    except Exception:
+        audit_rows = []
+
+    total_rev = 0.0
+    today_rev = 0.0
+    month_rev = 0.0
+
+    today_str = datetime.now().date().isoformat()
+    month_prefix = datetime.now().strftime("%Y-%m")
+    tenant_spend = defaultdict(float)
+
+    for r in audit_rows:
+        ts = (r.get("timestamp") or "")[:10]
+        detail = r.get("detail") or ""
+        amount = 0.0
+        try:
+            if isinstance(detail, str):
+                d_json = json.loads(detail)
+            else:
+                d_json = detail
+            
+            if d_json.get("action") == "deduct" or r.get("action") == "Wallet Auto-Deducted":
+                amount = float(d_json.get("amount") or 0.0)
+        except Exception:
+            pass
+
+        total_rev += amount
+        if ts == today_str:
+            today_rev += amount
+        if ts.startswith(month_prefix):
+            month_rev += amount
+            
+        tid = r.get("tenant_id") or "default"
+        tenant_spend[tid] += amount
+
+    # Total remaining wallet balance across MANAGED tenants
+    credits_remaining = sum(float(t.get("wallet_balance") or 0.0) for t in tenants if t.get("billing_mode") == "MANAGED")
+
+    # Top Spending Tenants
+    sorted_spend = sorted(tenant_spend.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_spenders = []
+    for tid, spend in sorted_spend:
+        t_name = "Unknown"
+        for t in tenants:
+            if t.get("id") == tid:
+                t_name = t.get("company_name") or tid
+                break
+        top_spenders.append({"tenant_id": tid, "tenant_name": t_name, "spend": round(spend, 2)})
+
+    # Calculate 14-day timelines for charts
+    today = datetime.now().date()
+    daily_calls = defaultdict(int)
+    for c in calls:
+        ts = (c.get("timestamp") or "")[:10]
+        if ts:
+            daily_calls[ts] += 1
+
+    daily_appts = defaultdict(int)
+    for a in appointments:
+        ts = (a.get("created_at") or a.get("date") or "")[:10]
+        if ts:
+            daily_appts[ts] += 1
+
+    daily_rev = defaultdict(float)
+    for r in audit_rows:
+        ts = (r.get("timestamp") or "")[:10]
+        if ts:
+            amount = 0.0
+            try:
+                detail = r.get("detail") or ""
+                if isinstance(detail, str):
+                    d_json = json.loads(detail)
+                else:
+                    d_json = detail
+                if d_json.get("action") == "deduct" or r.get("action") == "Wallet Auto-Deducted":
+                    amount = float(d_json.get("amount") or 0.0)
+            except Exception:
+                pass
+            daily_rev[ts] += amount
+
+    daily_growth = defaultdict(int)
+    for t in tenants:
+        ts = (t.get("created_at") or "")[:10]
+        if ts:
+            daily_growth[ts] += 1
+
+    timeline_labels = []
+    call_timeline_data = []
+    appt_timeline_data = []
+    rev_timeline_data = []
+    growth_timeline_data = []
+
+    for i in range(13, -1, -1):
+        day = today - timedelta(days=i)
+        day_str = day.isoformat()
+        day_label = day.strftime("%b %d")
+        
+        timeline_labels.append(day_label)
+        call_timeline_data.append(daily_calls.get(day_str, 0))
+        appt_timeline_data.append(daily_appts.get(day_str, 0))
+        rev_timeline_data.append(round(daily_rev.get(day_str, 0.0), 2))
+        growth_timeline_data.append(daily_growth.get(day_str, 0))
+
     return {
         "total_tenants": len(tenants),
         "active_tenants": len(active),
         "suspended_tenants": len(suspended),
         "trial_tenants": len(trial),
+        "deleted_tenants": deleted_count,
         "total_calls": len(calls),
+        "connected_calls": connected_calls,
+        "inbound_calls": inbound_calls,
         "total_campaigns": len(campaigns),
         "total_appointments": len(appointments),
+        "appointments_booked": appointments_booked,
+        
+        "today_revenue": round(today_rev, 2),
+        "monthly_revenue": round(month_rev, 2),
+        "total_revenue": round(total_rev, 2),
+        
+        "total_credits_used": round(total_rev, 2),
+        "credits_remaining": round(credits_remaining, 2),
+        "top_spending_tenants": top_spenders,
+        
+        "chart_labels": timeline_labels,
+        "chart_calls": call_timeline_data,
+        "chart_bookings": appt_timeline_data,
+        "chart_revenue": rev_timeline_data,
+        "chart_growth": growth_timeline_data,
     }
 
 async def audit_log(action: str, tenant_id: Optional[str] = None, detail: object = "", user_email: Optional[str] = None) -> None:
@@ -1298,3 +1541,175 @@ async def audit_log(action: str, tenant_id: Optional[str] = None, detail: object
         }).execute()
     except Exception:
         pass
+
+# ── Phase 3: Tenant Deletion, Suspension and Email Delivery Logs helpers ──
+
+async def soft_delete_tenant(tenant_id: str, deleted_by: str, reason: str) -> None:
+    db = await _adb()
+    
+    # 1. Fetch tenant row
+    res_tenant = await db.table("tenants").select("*").eq("id", tenant_id).maybe_single().execute()
+    tenant = res_tenant.data if res_tenant and getattr(res_tenant, "data", None) else None
+    if not tenant:
+        raise ValueError("Tenant not found")
+        
+    # 2. Compile snapshot of all tenant data
+    snapshot = {}
+    tables = [
+        "settings", "agent_profiles", "campaigns", "appointments", 
+        "call_logs", "tenant_api_keys", "users", "tenant_users"
+    ]
+    for table in tables:
+        res = await db.table(table).select("*").eq("tenant_id", tenant_id).execute()
+        snapshot[table] = res.data or []
+        
+    # 3. Rename emails in Supabase Auth to make them reusable
+    import time
+    tenant_users = snapshot.get("users", [])
+    for u in tenant_users:
+        uid = u.get("id")
+        email = u.get("email")
+        if uid and email:
+            timestamp = int(time.time())
+            new_email = email.replace("@", f"+deleted_{timestamp}@") if "@" in email else f"{email}_deleted_{timestamp}"
+            try:
+                # Rename in Supabase Auth using Admin API
+                await db.auth.admin.update_user_by_id(uid, AdminUserAttributes(email=new_email, email_confirm=True))
+                logger.info(f"Renamed auth user {uid}: {email} -> {new_email}")
+            except Exception as auth_exc:
+                logger.warning(f"Could not rename auth user {uid} in Supabase: {auth_exc}")
+                
+    # 4. Insert snapshot and info into deleted_tenants table
+    deleted_row = {
+        "tenant_id": tenant_id,
+        "tenant_name": tenant.get("company_name") or "",
+        "slug": tenant.get("slug") or "",
+        "email": tenant.get("support_email") or "",
+        "phone": "",
+        "created_at": tenant.get("created_at") or _now(),
+        "deleted_at": _now(),
+        "deleted_by": deleted_by,
+        "deletion_reason": reason,
+        "wallet_balance": float(tenant.get("wallet_balance") or 0.0),
+        "billing_mode": tenant.get("billing_mode") or "MANAGED",
+        "full_snapshot_json": json.dumps(snapshot)
+    }
+    await db.table("deleted_tenants").insert(deleted_row).execute()
+    
+    # 5. Delete records from active tables to revoke access completely
+    await db.table("tenants").delete().eq("id", tenant_id).execute()
+    for table in tables:
+        await db.table(table).delete().eq("tenant_id", tenant_id).execute()
+        
+    # Audit log
+    await audit_log("Tenant Soft Deleted", DEFAULT_TENANT_ID, {"tenant_id": tenant_id, "company_name": tenant.get("company_name"), "reason": reason}, deleted_by)
+
+async def restore_tenant(tenant_id: str) -> None:
+    db = await _adb()
+    
+    # 1. Fetch from deleted_tenants
+    res_del = await db.table("deleted_tenants").select("*").eq("tenant_id", tenant_id).maybe_single().execute()
+    del_tenant = res_del.data if res_del and getattr(res_del, "data", None) else None
+    if not del_tenant:
+        raise ValueError("Deleted tenant not found")
+        
+    snapshot = json.loads(del_tenant.get("full_snapshot_json") or "{}")
+    
+    # 2. Restore tenants record
+    tenant_row = {
+        "id": tenant_id,
+        "company_name": del_tenant.get("tenant_name"),
+        "slug": del_tenant.get("slug"),
+        "status": "ACTIVE",
+        "billing_mode": del_tenant.get("billing_mode"),
+        "wallet_balance": float(del_tenant.get("wallet_balance") or 0.0),
+        "is_active": True,
+        "created_at": del_tenant.get("created_at"),
+        "updated_at": _now(),
+    }
+    await db.table("tenants").insert(tenant_row).execute()
+    
+    # 3. Restore snapshot rows into active tables
+    tables = [
+        "settings", "agent_profiles", "campaigns", "appointments", 
+        "call_logs", "tenant_api_keys", "users", "tenant_users"
+    ]
+    for table in tables:
+        rows = snapshot.get(table, [])
+        if rows:
+            await db.table(table).insert(rows).execute()
+            
+    # 4. Rename user emails back in Supabase Auth if possible
+    users = snapshot.get("users", [])
+    for u in users:
+        uid = u.get("id")
+        orig_email = u.get("email")
+        if uid and orig_email:
+            try:
+                await db.auth.admin.update_user_by_id(uid, AdminUserAttributes(email=orig_email, email_confirm=True))
+                logger.info(f"Restored auth user email for {uid}: -> {orig_email}")
+            except Exception as auth_exc:
+                logger.warning(f"Could not restore email for auth user {uid}: {auth_exc}")
+                
+    # 5. Delete from deleted_tenants
+    await db.table("deleted_tenants").delete().eq("tenant_id", tenant_id).execute()
+    
+    # Audit log
+    await audit_log("Tenant Restored", DEFAULT_TENANT_ID, {"tenant_id": tenant_id, "company_name": del_tenant.get("tenant_name")})
+
+async def permanently_delete_tenant(tenant_id: str) -> None:
+    db = await _adb()
+    res_del = await db.table("deleted_tenants").select("tenant_name").eq("tenant_id", tenant_id).maybe_single().execute()
+    name = res_del.data.get("tenant_name") if res_del and getattr(res_del, "data", None) else tenant_id
+    
+    await db.table("deleted_tenants").delete().eq("tenant_id", tenant_id).execute()
+    await audit_log("Tenant Permanently Deleted", DEFAULT_TENANT_ID, {"tenant_id": tenant_id, "company_name": name})
+
+async def list_deleted_tenants() -> list:
+    db = await _adb()
+    try:
+        res = await db.table("deleted_tenants").select("*").order("deleted_at", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+async def log_email_delivery(
+    recipient: str,
+    subject: str,
+    status: str,
+    provider_response: str = "",
+    error_message: str = "",
+    tenant_id: Optional[str] = None,
+) -> None:
+    db = await _adb()
+    try:
+        row = {
+            "id": str(uuid.uuid4()),
+            "tenant_id": _clean_tenant_id(tenant_id),
+            "recipient": recipient,
+            "subject": subject,
+            "status": status,
+            "provider_response": provider_response[:1000] if provider_response else "",
+            "error_message": error_message[:1000] if error_message else "",
+            "timestamp": _now(),
+        }
+        await db.table("email_delivery_logs").insert(row).execute()
+    except Exception as exc:
+        logger.error(f"Failed to log email delivery: {exc}")
+
+async def get_email_delivery_logs(limit: int = 100) -> list:
+    db = await _adb()
+    try:
+        query = db.table("email_delivery_logs").select("*").order("timestamp", desc=True).limit(limit)
+        res = await _tenant_query(query).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+async def get_all_email_delivery_logs(limit: int = 200) -> list:
+    db = await _adb()
+    try:
+        res = await db.table("email_delivery_logs").select("*").order("timestamp", desc=True).limit(limit).execute()
+        return res.data or []
+    except Exception:
+        return []
