@@ -69,6 +69,403 @@ body.onboarding-locked .onboarding-container {
 .profile-drawer-btn {
   white-space: nowrap;
 }
+
+/* Premium User Menu Dropdown */
+.user-menu-container {
+  position: relative;
+  display: inline-block;
+}
+.user-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.user-menu-trigger:hover {
+  background: #f9fafb;
+  border-color: #d1d5db;
+  box-shadow: var(--shadow-sm);
+}
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #8b8bf4);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 12px;
+}
+.user-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+.user-menu-container.open .user-chevron {
+  transform: rotate(180deg);
+}
+.user-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 200px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0,0,0,0.08), 0 8px 10px -6px rgba(0,0,0,0.03);
+  padding: 6px;
+  z-index: 1000;
+  display: none;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.user-dropdown-menu.open {
+  display: block;
+  opacity: 1;
+  transform: translateY(0);
+}
+.user-dropdown-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.user-dropdown-item:hover {
+  background: #f3f4f6;
+  color: var(--text);
+}
+.user-dropdown-item.logout-item {
+  color: var(--danger);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  margin-top: 4px;
+  padding-top: 10px;
+}
+.user-dropdown-item.logout-item:hover {
+  background: #fef2f2;
+  color: var(--danger);
+}
+
+/* Tabbed Drawer Styling */
+aside#profile-drawer {
+  width: 520px !important;
+  max-width: 92vw;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+.drawer-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.profile-drawer-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.profile-sidebar {
+  width: 160px;
+  border-right: 1px solid var(--border);
+  background: #f9fafb;
+  padding: 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.profile-content {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.profile-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text2);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.profile-tab-btn:hover {
+  background: #f3f4f6;
+  color: var(--text);
+}
+.profile-tab-btn.active {
+  background: #ffffff;
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+.profile-tab-panel {
+  display: none;
+}
+.profile-tab-panel.active {
+  display: block;
+}
+
+/* Modern Layout Helpers */
+.settings-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,0.02);
+}
+.settings-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.upload-dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #f9fafb;
+}
+.upload-dropzone:hover, .upload-dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(91,91,214,0.02);
+}
+.upload-dropzone p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.color-preview-circle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.1);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+}
+
+/* Stats Dashboard Hero */
+.dashboard-hero {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dashboard-hero-content h2 {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.dashboard-hero-content p {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Mobile Overrides */
+@media(max-width: 900px) {
+  aside#profile-drawer {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+  }
+  .profile-drawer-body {
+    flex-direction: column;
+  }
+  .profile-sidebar {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    white-space: nowrap;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+  .profile-sidebar::-webkit-scrollbar {
+    display: none;
+  }
+  .profile-tab-btn {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+  }
+  .profile-content {
+    padding: 16px;
+  }
+}
+
+/* Color Picker Cards UI */
+.color-picker-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  text-align: center;
+  min-width: 0;
+}
+.color-picker-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(91, 91, 214, 0.08);
+  transform: translateY(-1px);
+}
+.color-picker-card .color-preview-circle.large {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 10px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px var(--border), 0 4px 10px rgba(0,0,0,0.08);
+  border-radius: 50%;
+  transition: background-color 0.15s ease;
+}
+.color-picker-card .color-hex-label {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.color-picker-card label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Security Checklist UI */
+.security-checklist {
+  list-style: none;
+  padding: 0;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.security-checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+.security-checklist-item.valid {
+  color: var(--success);
+}
+.security-checklist-item.invalid {
+  color: var(--danger);
+}
+.security-checklist-item .indicator-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+/* Brand Asset Cards UI */
+.brand-asset-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 16px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+.brand-asset-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.brand-asset-preview-container {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.brand-asset-preview-img {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  object-fit: contain;
+}
+.brand-asset-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brand-asset-meta strong {
+  font-size: 13px;
+  color: var(--text);
+}
+.brand-asset-meta span {
+  font-size: 11px;
+  color: var(--muted);
+}
 </style>
 </head>
 <body>
@@ -151,24 +548,52 @@ body.onboarding-locked .onboarding-container {
         <p id="page-subtitle" style="font-size: 13px; color: var(--muted); margin-top: 3px;">Monitor outbound calls, outcomes, and booking performance.</p>
       </div>
       <div class="topbar-right" style="display: flex; align-items: center; gap: 16px;">
-        <!-- <div class="topbar-search" style="position: relative; width: 220px;">
-          <svg style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); pointer-events: none;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" placeholder="Search workspace..." style="padding: 6px 12px 6px 30px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: #ffffff; width: 100%; font-family: var(--sans);" />
-        </div> -->
-        <button class="btn btn-secondary btn-sm profile-drawer-btn" style="white-space: nowrap;" type="button" onclick="openProfileDrawer()">Profile</button>
-        <button class="btn btn-secondary btn-sm logout-btn" style="white-space: nowrap;" type="button" onclick="logoutDashboard()">Logout</button>
+        <div class="user-menu-container" id="user-menu-container">
+          <div class="user-menu-trigger" onclick="toggleUserMenu(event)">
+            <div class="user-avatar" id="topbar-user-avatar">U</div>
+            <span id="topbar-user-name" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">User</span>
+            <svg class="user-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+          <div class="user-dropdown-menu" id="user-dropdown-menu">
+            <button class="user-dropdown-item" onclick="openProfileDrawerWithTab('account')">
+              <span style="font-size: 14px; margin-right: 4px;">👤</span> My Account
+            </button>
+            <button class="user-dropdown-item" onclick="openProfileDrawerWithTab('billing')">
+              <span style="font-size: 14px; margin-right: 4px;">💳</span> Billing & Credits
+            </button>
+            <button class="user-dropdown-item" onclick="openProfileDrawerWithTab('workspace')">
+              <span style="font-size: 14px; margin-right: 4px;">🏢</span> Workspace
+            </button>
+            <button class="user-dropdown-item" onclick="openProfileDrawerWithTab('branding')">
+              <span style="font-size: 14px; margin-right: 4px;">⚙️</span> Preferences
+            </button>
+            <button class="user-dropdown-item logout-item" onclick="logoutDashboard()">
+              <svg style="width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; margin-right: 6px;" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg> Logout
+            </button>
+          </div>
+        </div>
       </div>
     </header>
     <main>
 
 <!-- ══════════════════ STATS ══════════════════ -->
-<div id="tab-stats" class="tab-panel active"><div class="section-label">Overview</div>
-  <div class="kpi-grid">
-    <div class="kpi" data-kpi="total"><div class="kpi-icon" id="kpi-total-icon"><span class="spinner"></span></div><div class="kpi-label">Total Calls</div><div class="kpi-value blue" id="kpi-total">-</div></div>
-    <div class="kpi" data-kpi="booked"><div class="kpi-icon" id="kpi-booked-icon"><span class="spinner"></span></div><div class="kpi-label">Booked</div><div class="kpi-value green" id="kpi-booked">-</div></div>
-    <div class="kpi" data-kpi="not-interested"><div class="kpi-icon" id="kpi-ni-icon"><span class="spinner"></span></div><div class="kpi-label">Not Interested</div><div class="kpi-value red" id="kpi-ni">-</div></div>
+<div id="tab-stats" class="tab-panel active">
+  <div class="dashboard-hero">
+    <div class="dashboard-hero-content">
+      <h2 id="dashboard-welcome-msg">Good Morning, User 👋</h2>
+      <p>Here's what's happening in your workspace today.</p>
+    </div>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns: repeat(3, minmax(200px, 1fr)); margin-bottom: 24px;">
+    <div class="kpi" data-kpi="total"><div class="kpi-icon" id="kpi-total-icon"><span class="spinner"></span></div><div class="kpi-label">Calls Completed</div><div class="kpi-value blue" id="kpi-total">-</div></div>
     <div class="kpi" data-kpi="rate"><div class="kpi-icon" id="kpi-rate-icon"><span class="spinner"></span></div><div class="kpi-label">Booking Rate</div><div class="kpi-value warn" id="kpi-rate">-</div></div>
-    <div class="kpi" data-kpi="duration"><div class="kpi-icon" id="kpi-dur-icon"><span class="spinner"></span></div><div class="kpi-label">Avg Duration</div><div class="kpi-value" id="kpi-dur">-</div></div>
+    <div class="kpi" data-kpi="booked"><div class="kpi-icon" id="kpi-booked-icon"><span class="spinner"></span></div><div class="kpi-label">Appointments Booked</div><div class="kpi-value green" id="kpi-booked">-</div></div>
   </div>
   <div class="dashboard-grid">
     <div class="ops-grid">
@@ -927,137 +1352,311 @@ Thank you,
 
 <div id="profile-drawer-backdrop" class="drawer-backdrop" onclick="closeProfileDrawer()"></div>
 <aside id="profile-drawer" class="drawer" aria-hidden="true">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+  <div class="drawer-header">
     <div>
-      <div class="section-label" style="margin:0 0 4px">My Profile</div>
-      <h2 style="font-size:20px">Profile & Branding</h2>
+      <div class="section-label" style="margin:0 0 4px">Settings</div>
+      <h2 style="font-size:18px; font-weight:600;">Account Settings</h2>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="closeProfileDrawer()">Close</button>
   </div>
   
-  <div id="profile-drawer-content" style="display:flex;flex-direction:column;gap:24px;">
-    
-    <!-- User Info Section -->
-    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
-      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">User Profile</h3>
-      <form id="profile-user-form" onsubmit="saveUserProfile(event)">
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Display Name</label>
-          <input type="text" id="profile-user-name" placeholder="John Doe" required/>
-        </div>
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Email Address</label>
-          <input type="text" id="profile-user-email" readonly style="background: var(--card2); color: var(--muted);"/>
-        </div>
-        <button type="submit" class="btn btn-primary btn-sm" style="width: 100%;">Save Profile Name</button>
-      </form>
+  <div class="profile-drawer-body">
+    <!-- Sidebar -->
+    <div class="profile-sidebar">
+      <button class="profile-tab-btn active" id="tab-btn-account" onclick="switchProfileTab('account')">
+        <span>👤</span> Account
+      </button>
+      <button class="profile-tab-btn" id="tab-btn-workspace" onclick="switchProfileTab('workspace')">
+        <span>🏢</span> Workspace
+      </button>
+      <button class="profile-tab-btn" id="tab-btn-billing" onclick="switchProfileTab('billing')">
+        <span>💳</span> Billing
+      </button>
+      <button class="profile-tab-btn" id="tab-btn-branding" onclick="switchProfileTab('branding')">
+        <span>🎨</span> Branding
+      </button>
+      <button class="profile-tab-btn" id="tab-btn-security" onclick="switchProfileTab('security')">
+        <span>🔒</span> Security
+      </button>
     </div>
     
-    <!-- Tenant Info & Wallet -->
-    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
-      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">Tenant Workspace</h3>
-      <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
-        <div style="display: flex; justify-content: space-between;">
-          <span style="color: var(--muted);">Status</span>
-          <span id="profile-status-badge">-</span>
+    <!-- Content Panel -->
+    <div class="profile-content">
+      
+      <!-- Panel: Account -->
+      <div class="profile-tab-panel active" id="profile-panel-account">
+        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px; background: #fafafa; border: 1px solid var(--border); border-radius: 12px; padding: 16px;">
+          <div class="user-avatar" id="profile-avatar-large" style="width: 48px; height: 48px; font-size: 20px;">NC</div>
+          <div>
+            <h3 style="font-size: 15px; font-weight: 600;" id="profile-display-header-name">Not Configured</h3>
+            <p style="font-size: 13px; color: var(--muted);" id="profile-display-header-email">Not Configured</p>
+          </div>
         </div>
-        <div style="display: flex; justify-content: space-between;">
-          <span style="color: var(--muted);">Billing Mode</span>
-          <strong id="profile-billing-mode">-</strong>
+        
+        <form id="profile-user-form" onsubmit="saveUserProfile(event)">
+          <div class="settings-card">
+            <div class="settings-card-title">Profile Information</div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Display Name</label>
+              <input type="text" id="profile-user-name" placeholder="John Doe" required/>
+            </div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Email Address</label>
+              <input type="text" id="profile-user-email" readonly style="background: var(--card2); color: var(--muted); cursor: not-allowed;"/>
+            </div>
+            <div class="form-row" style="grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 0; min-height: 0;">
+              <div class="form-group">
+                <label>Timezone</label>
+                <select id="profile-user-timezone">
+                  <option value="UTC">UTC</option>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                  <option value="America/New_York">America/New_York (EST)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
+                  <option value="Europe/London">Europe/London (GMT/BST)</option>
+                  <option value="Europe/Paris">Europe/Paris (CET/CEST)</option>
+                  <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                  <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Language</label>
+                <select id="profile-user-language">
+                  <option value="en">English (US)</option>
+                  <option value="es">Español</option>
+                  <option value="fr">Français</option>
+                  <option value="de">Deutsch</option>
+                  <option value="ja">日本語</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width: 100%;">Save Changes</button>
+        </form>
+      </div>
+      
+      <!-- Panel: Workspace -->
+      <div class="profile-tab-panel" id="profile-panel-workspace">
+        <div class="settings-card">
+          <div class="settings-card-title">Active Workspace</div>
+          <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Company Name</span>
+              <strong id="profile-workspace-company">Not Configured</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Workspace ID</span>
+              <span id="profile-workspace-id" style="font-family: var(--mono); font-size: 11px; color: var(--text2);">Not Configured</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Plan Type</span>
+              <strong id="profile-workspace-plan">Not Configured</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Status</span>
+              <span id="profile-status-badge">Not Configured</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--muted);">Created Date</span>
+              <strong id="profile-workspace-created">Not Configured</strong>
+            </div>
+          </div>
         </div>
-        <div style="display: flex; justify-content: space-between;">
-          <span style="color: var(--muted);">Wallet Balance</span>
-          <strong id="profile-wallet-balance">Rs 0.00</strong>
+      </div>
+      
+      <!-- Panel: Billing -->
+      <div class="profile-tab-panel" id="profile-panel-billing">
+        <div class="settings-card" style="margin-bottom: 16px;">
+          <div class="settings-card-title">Wallet Balance</div>
+          <div style="font-size: 32px; font-weight: 700; color: var(--text); margin-bottom: 8px;" id="profile-wallet-balance">Rs 0.00</div>
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px;">
+            <span>Billing Mode: <strong id="profile-billing-mode">Not Configured</strong></span>
+          </div>
+          
+          <div class="progress" style="margin-top: 12px; margin-bottom: 6px;">
+            <div class="progress-bar" id="profile-credits-progress" style="width: 100%;"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);">
+            <span id="profile-credits-spent">Used: Rs 0.00</span>
+            <span id="profile-credits-remaining">Available: Rs 0.00</span>
+          </div>
         </div>
-        <div id="profile-wallet-add-section" style="margin-top: 6px;">
+        
+        <div id="profile-wallet-add-section" class="settings-card" style="margin-bottom: 16px;">
+          <div class="settings-card-title">Add Credits (Demo Mode)</div>
           <form onsubmit="addDemoCredits(event, 'profile-wallet-input')">
             <div style="display: flex; gap: 8px;">
-              <input type="number" id="profile-wallet-input" placeholder="Amount" min="1" max="10000" style="padding: 6px 8px; font-size: 12px;" required/>
-              <button type="submit" class="btn btn-secondary btn-sm">Add Demo Credits</button>
+              <input type="number" id="profile-wallet-input" placeholder="Amount (e.g. 50)" min="1" max="10000" required/>
+              <button type="submit" class="btn btn-secondary" style="white-space: nowrap;">Add Credits</button>
             </div>
           </form>
         </div>
+        
+        <div class="settings-card">
+          <div class="settings-card-title">Recent Transactions</div>
+          <div class="tbl-wrap" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+            <table style="min-width: 100%; font-size: 12px;">
+              <thead>
+                <tr>
+                  <th style="padding: 8px 10px;">Date</th>
+                  <th style="padding: 8px 10px;">Description</th>
+                  <th style="padding: 8px 10px; text-align: right;">Amount</th>
+                </tr>
+              </thead>
+              <tbody id="profile-billing-logs-tbody">
+                <tr class="empty-row"><td colspan="3" style="padding: 16px; text-align: center; color: var(--muted);">No transaction history available.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
+      
+      <!-- Panel: Branding -->
+      <div class="profile-tab-panel" id="profile-panel-branding">
+        <form id="profile-branding-form" onsubmit="saveProfileBranding(event)">
+          <div class="settings-card">
+            <div class="settings-card-title">Brand Identity</div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Company Name</label>
+              <input type="text" id="profile-brand-name" placeholder="My Calling Company" required/>
+            </div>
+            
+            <div class="form-row" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; min-height: 0;">
+              <!-- Primary Color Card -->
+              <div class="color-picker-card" onclick="$('profile-brand-primary').click()">
+                <div class="color-preview-circle large" id="profile-brand-primary-preview" style="background-color: #5B5BD6;"></div>
+                <div class="color-hex-label" id="profile-brand-primary-hex-label">#5B5BD6</div>
+                <label>Primary Color</label>
+                <input type="color" id="profile-brand-primary" style="display: none;" />
+                <input type="hidden" id="profile-brand-primary-hex" value="#5B5BD6" />
+              </div>
+              <!-- Secondary Color Card -->
+              <div class="color-picker-card" onclick="$('profile-brand-secondary').click()">
+                <div class="color-preview-circle large" id="profile-brand-secondary-preview" style="background-color: #00b894;"></div>
+                <div class="color-hex-label" id="profile-brand-secondary-hex-label">#00B894</div>
+                <label>Secondary Color</label>
+                <input type="color" id="profile-brand-secondary" style="display: none;" />
+                <input type="hidden" id="profile-brand-secondary-hex" value="#00B894" />
+              </div>
+            </div>
+          </div>
+          
+          <div class="settings-card">
+            <div class="settings-card-title">Assets & Logos</div>
+            
+            <!-- Logo Card -->
+            <div class="brand-asset-card">
+              <div class="brand-asset-header">Logo</div>
+              <div class="brand-asset-preview-container">
+                <img id="profile-logo-preview" src="/ui/ai_voice_logo.png" class="brand-asset-preview-img" />
+                <div class="brand-asset-meta">
+                  <strong>Current Logo</strong>
+                  <span id="profile-logo-status">No logo configured</span>
+                </div>
+                <button type="button" id="profile-logo-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 4px 8px; font-size: 11px;" onclick="clearUploadedFile('profile-logo-file', 'profile-logo-status', 'profile-logo-clear-btn', 'profile-logo-preview', '/ui/ai_voice_logo.png', 'profile-logo-url')">Remove</button>
+              </div>
+              
+              <div class="upload-dropzone" id="logo-dropzone" onclick="$('profile-logo-file').click()">
+                <div style="font-size: 13px; font-weight: 600; margin-bottom: 2px;">Replace Logo</div>
+                <span style="font-size: 11px; color: var(--muted);">Drag and drop logo or click to browse</span>
+                <p style="margin-top: 4px; font-size: 10px; color: var(--muted);">Supports PNG, SVG, JPG, ICO</p>
+              </div>
+              <input type="file" id="profile-logo-file" accept=".png,.jpg,.jpeg,.svg,.ico" style="display: none;" onchange="handleBrandingFileUpload(this, 'profile-logo-url', 'profile-logo-status', 'profile-logo-clear-btn', 'profile-logo-preview')"/>
+              <input type="hidden" id="profile-logo-url" />
+            </div>
+            
+            <!-- Favicon Card -->
+            <div class="brand-asset-card">
+              <div class="brand-asset-header">Favicon</div>
+              <div class="brand-asset-preview-container">
+                <img id="profile-favicon-preview" src="/ui/ai_voice_logo.png" class="brand-asset-preview-img" />
+                <div class="brand-asset-meta">
+                  <strong>Current Favicon</strong>
+                  <span id="profile-favicon-status">No favicon configured</span>
+                </div>
+                <button type="button" id="profile-favicon-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 4px 8px; font-size: 11px;" onclick="clearUploadedFile('profile-favicon-file', 'profile-favicon-status', 'profile-favicon-clear-btn', 'profile-favicon-preview', '/ui/ai_voice_logo.png', 'profile-favicon-url')">Remove</button>
+              </div>
+              
+              <div class="upload-dropzone" id="favicon-dropzone" onclick="$('profile-favicon-file').click()">
+                <div style="font-size: 13px; font-weight: 600; margin-bottom: 2px;">Replace Favicon</div>
+                <span style="font-size: 11px; color: var(--muted);">Drag and drop favicon or click to browse</span>
+                <p style="margin-top: 4px; font-size: 10px; color: var(--muted);">Supports PNG, SVG, JPG, ICO</p>
+              </div>
+              <input type="file" id="profile-favicon-file" accept=".png,.jpg,.jpeg,.svg,.ico" style="display: none;" onchange="handleBrandingFileUpload(this, 'profile-favicon-url', 'profile-favicon-status', 'profile-favicon-clear-btn', 'profile-favicon-preview')"/>
+              <input type="hidden" id="profile-favicon-url" />
+            </div>
+            
+          </div>
+          <button type="submit" class="btn btn-primary" style="width: 100%;">Save Branding</button>
+        </form>
+      </div>
+      
+      <!-- Panel: Security -->
+      <div class="profile-tab-panel" id="profile-panel-security">
+        <!-- Security Overview Card -->
+        <div class="settings-card">
+          <div class="settings-card-title">Security Overview</div>
+          <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Account Email</span>
+              <strong id="security-overview-email">Not Configured</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+              <span style="color: var(--muted);">Password Status</span>
+              <strong id="security-overview-status" style="color: var(--success);">Active (Encrypted)</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="color: var(--muted);">Last Password Change</span>
+              <strong id="security-overview-last-change">Not Configured</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Change Password Card -->
+        <div class="settings-card">
+          <div class="settings-card-title">Change Password</div>
+          <form id="profile-security-form" onsubmit="updateUserPassword(event)">
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>Current Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="profile-security-current-password" placeholder="Enter current password" required />
+                <button type="button" class="eye-btn" onclick="togglePass('profile-security-current-password', this)">Show</button>
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label>New Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="profile-security-new-password" placeholder="Min 8 characters" required oninput="validatePasswordStrength()"/>
+                <button type="button" class="eye-btn" onclick="togglePass('profile-security-new-password', this)">Show</button>
+              </div>
+              
+              <!-- Password Strength Requirements Checklist -->
+              <ul class="security-checklist">
+                <li class="security-checklist-item" id="req-length">
+                  <span class="indicator-icon">○</span> 8+ characters
+                </li>
+                <li class="security-checklist-item" id="req-uppercase">
+                  <span class="indicator-icon">○</span> Uppercase letter
+                </li>
+                <li class="security-checklist-item" id="req-number">
+                  <span class="indicator-icon">○</span> Number
+                </li>
+              </ul>
+            </div>
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label>Confirm Password</label>
+              <div class="pass-wrap">
+                <input type="password" id="profile-security-confirm-password" placeholder="Confirm new password" required oninput="validatePasswordStrength()"/>
+                <button type="button" class="eye-btn" onclick="togglePass('profile-security-confirm-password', this)">Show</button>
+              </div>
+              <div id="password-match-error" style="font-size: 12px; color: var(--danger); margin-top: 4px; display: none;">Passwords do not match</div>
+            </div>
+            
+            <button type="submit" id="profile-security-submit" class="btn btn-primary" style="width: 100%;" disabled>Update Password</button>
+          </form>
+        </div>
+      </div>
+      
     </div>
-    
-    <!-- Workspace Branding -->
-    <div style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
-      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">Workspace Branding</h3>
-      <form id="profile-branding-form" onsubmit="saveProfileBranding(event)">
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Company Name</label>
-          <input type="text" id="profile-brand-name" placeholder="My Calling Company" required/>
-        </div>
-        
-        <div class="form-row" style="margin-bottom: 10px; grid-template-columns: 1fr 1fr; gap: 8px;">
-          <div class="form-group">
-            <label>Primary Color</label>
-            <div style="display: flex; gap: 4px;">
-              <input type="color" id="profile-brand-primary" style="width: 32px; height: 32px; padding: 2px;" />
-              <input type="text" id="profile-brand-primary-hex" placeholder="#5B5BD6" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 6px; font-size: 12px;" />
-            </div>
-          </div>
-          <div class="form-group">
-            <label>Secondary Color</label>
-            <div style="display: flex; gap: 4px;">
-              <input type="color" id="profile-brand-secondary" style="width: 32px; height: 32px; padding: 2px;" />
-              <input type="text" id="profile-brand-secondary-hex" placeholder="#00b894" pattern="^#[0-9A-Fa-f]{6}$" style="padding: 6px; font-size: 12px;" />
-            </div>
-          </div>
-        </div>
-        
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Logo URL</label>
-          <input type="text" id="profile-logo-url" placeholder="https://example.com/logo.png" style="font-size: 12px;"/>
-          <div style="margin-top: 4px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <input type="file" id="profile-logo-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'profile-logo-status', 'profile-logo-clear-btn')" style="font-size: 11px; padding: 4px;"/>
-              <span id="profile-logo-status" style="font-size: 11px; color: var(--muted);"></span>
-              <button type="button" id="profile-logo-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('profile-logo-file', 'profile-logo-status', 'profile-logo-clear-btn')">Remove file</button>
-            </div>
-          </div>
-        </div>
-        
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Favicon URL</label>
-          <input type="text" id="profile-favicon-url" placeholder="https://example.com/favicon.ico" style="font-size: 12px;"/>
-          <div style="margin-top: 4px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <input type="file" id="profile-favicon-file" accept=".png,.jpg,.jpeg,.svg,.ico" onchange="handleLogoUpload(this, 'profile-favicon-status', 'profile-favicon-clear-btn')" style="font-size: 11px; padding: 4px;"/>
-              <span id="profile-favicon-status" style="font-size: 11px; color: var(--muted);"></span>
-              <button type="button" id="profile-favicon-clear-btn" class="btn btn-secondary btn-sm" style="display:none; padding: 2px 6px; font-size: 11px;" onclick="clearUploadedFile('profile-favicon-file', 'profile-favicon-status', 'profile-favicon-clear-btn')">Remove file</button>
-            </div>
-          </div>
-        </div>
-        
-        <button type="submit" class="btn btn-primary btn-sm" style="width: 100%; margin-top: 8px;">Save Branding Settings</button>
-      </form>
-    </div>
-    
-    <!-- API Credentials -->
-    <div>
-      <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 12px;">API Key Credentials</h3>
-      <form id="profile-keys-form" onsubmit="saveProfileKeys(event)">
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>Gemini API Key</label>
-          <input type="password" id="profile-key-gemini" placeholder="GOOGLE_API_KEY"/>
-        </div>
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>LiveKit URL</label>
-          <input type="text" id="profile-key-livekit-url" placeholder="wss://...livekit.cloud"/>
-        </div>
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>LiveKit API Key</label>
-          <input type="text" id="profile-key-livekit-key" placeholder="LIVEKIT_API_KEY"/>
-        </div>
-        <div class="form-group" style="margin-bottom: 10px;">
-          <label>LiveKit API Secret</label>
-          <input type="password" id="profile-key-livekit-secret" placeholder="LIVEKIT_API_SECRET"/>
-        </div>
-        <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Save Credentials</button>
-      </form>
-    </div>
-    
   </div>
 </aside>
 
@@ -1448,31 +2047,95 @@ async function bootstrapAuth(){
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Onboarding & Profile Functionality
 
-function syncColorInputs(pickerId, hexId) {
+function syncColorInputs(pickerId, hexId, previewId, labelId) {
   const picker = $(pickerId);
   const hex = $(hexId);
+  const preview = $(previewId);
+  const label = $(labelId);
   if (picker && hex) {
     picker.addEventListener('input', () => {
-      hex.value = picker.value.toUpperCase();
+      const colorVal = picker.value.toUpperCase();
+      hex.value = colorVal;
+      if (preview) preview.style.backgroundColor = colorVal;
+      if (label) label.textContent = colorVal;
     });
     hex.addEventListener('input', () => {
       if (/^#[0-9A-Fa-f]{6}$/.test(hex.value)) {
-        picker.value = hex.value;
+        const colorVal = hex.value.toUpperCase();
+        picker.value = colorVal;
+        if (preview) preview.style.backgroundColor = colorVal;
+        if (label) label.textContent = colorVal;
       }
     });
   }
 }
 
-// Set up color picker listeners
+// Set up color picker listeners and Drag and Drop uploads
 document.addEventListener('DOMContentLoaded', () => {
   syncColorInputs('onboard-brand-primary', 'onboard-brand-primary-hex');
   syncColorInputs('onboard-brand-secondary', 'onboard-brand-secondary-hex');
-  syncColorInputs('profile-brand-primary', 'profile-brand-primary-hex');
-  syncColorInputs('profile-brand-secondary', 'profile-brand-secondary-hex');
+  syncColorInputs('profile-brand-primary', 'profile-brand-primary-hex', 'profile-brand-primary-preview', 'profile-brand-primary-hex-label');
+  syncColorInputs('profile-brand-secondary', 'profile-brand-secondary-hex', 'profile-brand-secondary-preview', 'profile-brand-secondary-hex-label');
+  setupBrandingDropzones();
 });
+
+// Setup drag and drop for profile branding logo/favicon
+function setupBrandingDropzones() {
+  const setupZone = (zoneId, fileInputId, urlInputId, statusId, clearBtnId, previewId) => {
+    const zone = $(zoneId);
+    const fileInput = $(fileInputId);
+    if (!zone || !fileInput) return;
+    
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      zone.classList.add('dragover');
+    });
+    
+    zone.addEventListener('dragleave', () => {
+      zone.classList.remove('dragover');
+    });
+    
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) {
+        fileInput.files = e.dataTransfer.files;
+        handleBrandingFileUpload(fileInput, urlInputId, statusId, clearBtnId, previewId);
+      }
+    });
+  };
+  
+  setupZone('logo-dropzone', 'profile-logo-file', 'profile-logo-url', 'profile-logo-status', 'profile-logo-clear-btn', 'profile-logo-preview');
+  setupZone('favicon-dropzone', 'profile-favicon-file', 'profile-favicon-url', 'profile-favicon-status', 'profile-favicon-clear-btn', 'profile-favicon-preview');
+}
+
+// Toggle Topbar User Menu Dropdown
+function toggleUserMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = $('user-dropdown-menu');
+  const container = $('user-menu-container');
+  if (menu) {
+    const isOpen = menu.classList.contains('open');
+    if (isOpen) {
+      menu.classList.remove('open');
+      container.classList.remove('open');
+    } else {
+      menu.classList.add('open');
+      container.classList.add('open');
+      
+      const closeMenu = (e) => {
+        if (!container.contains(e.target)) {
+          menu.classList.remove('open');
+          container.classList.remove('open');
+          document.removeEventListener('click', closeMenu);
+        }
+      };
+      document.addEventListener('click', closeMenu);
+    }
+  }
+}
 
 function openProfileDrawer() {
   $('profile-drawer-backdrop').classList.add('open');
@@ -1487,53 +2150,281 @@ function closeProfileDrawer() {
   $('profile-drawer').setAttribute('aria-hidden', 'true');
 }
 
+function openProfileDrawerWithTab(tab) {
+  const menu = $('user-dropdown-menu');
+  const container = $('user-menu-container');
+  if (menu) menu.classList.remove('open');
+  if (container) container.classList.remove('open');
+  openProfileDrawer();
+  switchProfileTab(tab);
+}
+
+function switchProfileTab(tab) {
+  document.querySelectorAll('.profile-tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.querySelectorAll('.profile-tab-panel').forEach(panel => panel.classList.remove('active'));
+  
+  const activeBtn = $(`tab-btn-${tab}`);
+  const activePanel = $(`profile-panel-${tab}`);
+  if (activeBtn) activeBtn.classList.add('active');
+  if (activePanel) activePanel.classList.add('active');
+  
+  if (tab === 'billing') {
+    loadBillingLogs();
+  }
+}
+
+function getInitials(name) {
+  if (!name || name === 'Not Configured') return "NC";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  if (parts[0].length >= 2) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  return parts[0][0].toUpperCase();
+}
+
+function updateUserInitials(name) {
+  const initials = getInitials(name);
+  if ($('topbar-user-avatar')) $('topbar-user-avatar').textContent = initials;
+  if ($('profile-avatar-large')) $('profile-avatar-large').textContent = initials;
+  if ($('topbar-user-name')) $('topbar-user-name').textContent = name || 'Not Configured';
+}
+
+function updateDynamicGreeting(userName) {
+  const welcomeMsg = $('dashboard-welcome-msg');
+  if (!welcomeMsg) return;
+  const hour = new Date().getHours();
+  let greeting = "Good Morning";
+  if (hour >= 12 && hour < 17) {
+    greeting = "Good Afternoon";
+  } else if (hour >= 17 || hour < 4) {
+    greeting = "Good Evening";
+  }
+  welcomeMsg.textContent = `${greeting}, ${userName || 'User'} 👋`;
+}
+
+async function loadBillingLogs() {
+  const tbody = $('profile-billing-logs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = `<tr class="empty-row"><td colspan="3" style="padding: 16px; text-align: center; color: var(--muted);">No transaction history available.</td></tr>`;
+}
+
+function validatePasswordStrength() {
+  const newPass = $('profile-security-new-password').value;
+  const confirmPass = $('profile-security-confirm-password').value;
+  
+  const hasLength = newPass.length >= 8;
+  const hasUppercase = /[A-Z]/.test(newPass);
+  const hasNumber = /[0-9]/.test(newPass);
+  
+  const updateReq = (id, isValid) => {
+    const el = $(id);
+    if (!el) return;
+    const icon = el.querySelector('.indicator-icon');
+    if (isValid) {
+      el.classList.add('valid');
+      el.classList.remove('invalid');
+      if (icon) icon.textContent = '✓';
+    } else {
+      el.classList.remove('valid');
+      if (newPass.length > 0) {
+        el.classList.add('invalid');
+        if (icon) icon.textContent = '✗';
+      } else {
+        el.classList.remove('invalid');
+        if (icon) icon.textContent = '○';
+      }
+    }
+  };
+  
+  updateReq('req-length', hasLength);
+  updateReq('req-uppercase', hasUppercase);
+  updateReq('req-number', hasNumber);
+  
+  const passwordsMatch = newPass === confirmPass;
+  const matchErr = $('password-match-error');
+  if (matchErr) {
+    if (confirmPass.length > 0 && !passwordsMatch) {
+      matchErr.style.display = 'block';
+    } else {
+      matchErr.style.display = 'none';
+    }
+  }
+  
+  const submitBtn = $('profile-security-submit');
+  if (submitBtn) {
+    submitBtn.disabled = !(hasLength && hasUppercase && hasNumber && passwordsMatch);
+  }
+}
+
 async function loadProfileData() {
   try {
     const profile = await api('/api/profile');
     
     // User Profile Info
     $('profile-user-name').value = profile.user_name || '';
-    $('profile-user-email').value = profile.user_email || '';
+    
+    // Resolve email (fallback to Supabase auth session)
+    let email = profile.user_email;
+    if (!email) {
+      try {
+        const sb = await getSupabase();
+        if (sb) {
+          const { data: { user } } = await sb.auth.getUser();
+          if (user && user.email) {
+            email = user.email;
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch user email from Supabase", err);
+      }
+    }
+    email = email || 'Not Configured';
+    $('profile-user-email').value = email === 'Not Configured' ? '' : email;
+    
+    // Timezone & Language settings cached in localStorage
+    const userTz = localStorage.getItem('user-timezone') || 'Asia/Kolkata';
+    const userLang = localStorage.getItem('user-language') || 'en';
+    if ($('profile-user-timezone')) $('profile-user-timezone').value = userTz;
+    if ($('profile-user-language')) $('profile-user-language').value = userLang;
+    
+    // Initials & Large Avatar in form
+    const initials = getInitials(profile.user_name || email);
+    if ($('profile-avatar-large')) {
+      $('profile-avatar-large').textContent = initials;
+    }
+    if ($('profile-display-header-name')) {
+      $('profile-display-header-name').textContent = profile.user_name || 'Not Configured';
+    }
+    if ($('profile-display-header-email')) {
+      $('profile-display-header-email').textContent = email;
+    }
+    
+    // Topbar update
+    updateUserInitials(profile.user_name || email);
+    updateDynamicGreeting(profile.user_name);
     
     // Tenant Workspace Details
-    $('profile-status-badge').innerHTML = badge(profile.tenant_status);
-    $('profile-billing-mode').textContent = profile.billing_mode;
-    $('profile-wallet-balance').textContent = `Rs ${(profile.wallet_balance ?? 0.0).toFixed(2)}`;
+    if ($('profile-workspace-company')) $('profile-workspace-company').textContent = profile.tenant_name || 'Not Configured';
+    if ($('profile-workspace-id')) {
+      const tenantId = (window.__authContext && window.__authContext.tenant_id) || '-';
+      $('profile-workspace-id').textContent = tenantId === '-' ? 'Not Configured' : tenantId;
+    }
+    if ($('profile-workspace-plan')) $('profile-workspace-plan').textContent = profile.billing_mode || 'Not Configured';
+    if ($('profile-status-badge')) {
+      if (profile.tenant_status) {
+        $('profile-status-badge').innerHTML = badge(profile.tenant_status);
+      } else {
+        $('profile-status-badge').textContent = 'Not Configured';
+      }
+    }
+    if ($('profile-workspace-created')) $('profile-workspace-created').textContent = profile.account_creation_date ? fmtTs(profile.account_creation_date) : 'Not Configured';
+    
+    // Wallet & Billing Mode
+    if ($('profile-billing-mode')) $('profile-billing-mode').textContent = profile.billing_mode || 'Not Configured';
+    if ($('profile-wallet-balance')) {
+      $('profile-wallet-balance').textContent = profile.wallet_balance != null ? `Rs ${(profile.wallet_balance).toFixed(2)}` : 'Rs 0.00';
+    }
+    
+    // Progress Bar Calculation
+    const spent = (profile.stats?.total_calls || 0) * 1.00; // Flat Rs 1.00 rate
+    const balance = profile.wallet_balance ?? 0.0;
+    const total = spent + balance;
+    const pct = total > 0 ? (balance / total) * 100 : 100;
+    if ($('profile-credits-progress')) $('profile-credits-progress').style.width = `${pct}%`;
+    if ($('profile-credits-spent')) $('profile-credits-spent').textContent = `Used: Rs ${spent.toFixed(2)}`;
+    if ($('profile-credits-remaining')) $('profile-credits-remaining').textContent = `Available: Rs ${balance.toFixed(2)}`;
     
     // Hide wallet section for BYOK tenants
     if (profile.billing_mode === 'BYOK') {
-      $('profile-wallet-add-section').style.display = 'none';
+      if ($('profile-wallet-add-section')) $('profile-wallet-add-section').style.display = 'none';
     } else {
-      $('profile-wallet-add-section').style.display = 'block';
+      if ($('profile-wallet-add-section')) $('profile-wallet-add-section').style.display = 'block';
     }
     
     // Workspace Branding
     const branding = profile.branding || {};
     $('profile-brand-name').value = branding.company_name || '';
-    $('profile-brand-primary').value = branding.primary_color || '#5B5BD6';
-    $('profile-brand-primary-hex').value = branding.primary_color || '#5B5BD6';
-    $('profile-brand-secondary').value = branding.secondary_color || '#00b894';
-    $('profile-brand-secondary-hex').value = branding.secondary_color || '#00b894';
-    $('profile-logo-url').value = branding.company_logo_url || '';
-    $('profile-favicon-url').value = branding.favicon_url || '';
     
-    // API Keys
-    loadProfileKeys();
+    // Primary Color
+    const primary = branding.primary_color || '#5B5BD6';
+    $('profile-brand-primary').value = primary;
+    $('profile-brand-primary-hex').value = primary;
+    if ($('profile-brand-primary-preview')) {
+      $('profile-brand-primary-preview').style.backgroundColor = primary;
+    }
+    if ($('profile-brand-primary-hex-label')) {
+      $('profile-brand-primary-hex-label').textContent = primary;
+    }
+    
+    // Secondary Color
+    const secondary = branding.secondary_color || '#00b894';
+    $('profile-brand-secondary').value = secondary;
+    $('profile-brand-secondary-hex').value = secondary;
+    if ($('profile-brand-secondary-preview')) {
+      $('profile-brand-secondary-preview').style.backgroundColor = secondary;
+    }
+    if ($('profile-brand-secondary-hex-label')) {
+      $('profile-brand-secondary-hex-label').textContent = secondary;
+    }
+    
+    // Logo image and favicon previews
+    const logoUrl = branding.company_logo_url || '';
+    $('profile-logo-url').value = logoUrl;
+    if ($('profile-logo-preview')) {
+      $('profile-logo-preview').src = logoUrl || '/ui/ai_voice_logo.png';
+    }
+    if (logoUrl) {
+      $('profile-logo-clear-btn').style.display = 'inline-block';
+      $('profile-logo-status').textContent = 'Configured';
+    } else {
+      $('profile-logo-clear-btn').style.display = 'none';
+      $('profile-logo-status').textContent = 'Not Configured';
+    }
+    
+    const faviconUrl = branding.favicon_url || '';
+    $('profile-favicon-url').value = faviconUrl;
+    if ($('profile-favicon-preview')) {
+      $('profile-favicon-preview').src = faviconUrl || '/ui/ai_voice_logo.png';
+    }
+    if (faviconUrl) {
+      $('profile-favicon-clear-btn').style.display = 'inline-block';
+      $('profile-favicon-status').textContent = 'Configured';
+    } else {
+      $('profile-favicon-clear-btn').style.display = 'none';
+      $('profile-favicon-status').textContent = 'Not Configured';
+    }
+    
+    // Security tab update
+    if ($('security-overview-email')) {
+      $('security-overview-email').textContent = email;
+    }
+    if ($('security-overview-status')) {
+      $('security-overview-status').textContent = 'Active (Encrypted)';
+    }
+    
+    // Populate security-overview-last-change from Supabase user updated_at field
+    if ($('security-overview-last-change')) {
+      let lastChange = 'Not Configured';
+      try {
+        const sb = await getSupabase();
+        if (sb) {
+          const { data: { user } } = await sb.auth.getUser();
+          if (user && user.updated_at) {
+            lastChange = fmtTs(user.updated_at);
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch user update timestamp", err);
+      }
+      $('security-overview-last-change').textContent = lastChange;
+    }
+    
   } catch (err) {
     console.error('Failed to load profile details', err);
     toast('Could not load profile details', 'err');
-  }
-}
-
-async function loadProfileKeys() {
-  try {
-    const res = await api('/api/settings');
-    $('profile-key-gemini').value = '';
-    $('profile-key-livekit-url').value = res.LIVEKIT_URL?.value || '';
-    $('profile-key-livekit-key').value = res.LIVEKIT_API_KEY?.value || '';
-    $('profile-key-livekit-secret').value = '';
-  } catch (err) {
-    console.warn('Failed to load settings keys', err);
   }
 }
 
@@ -1552,10 +2443,17 @@ async function loadOnboardingKeys() {
 async function saveUserProfile(e) {
   e.preventDefault();
   const name = $('profile-user-name').value.trim();
+  const timezone = $('profile-user-timezone').value;
+  const language = $('profile-user-language').value;
   try {
     const res = await apiPost('/api/profile', { full_name: name });
     if (res.ok) {
-      toast('Display name updated');
+      localStorage.setItem('user-timezone', timezone);
+      localStorage.setItem('user-language', language);
+      toast('Profile information updated');
+      updateUserInitials(name);
+      updateDynamicGreeting(name);
+      loadProfileData();
     } else {
       const d = await res.json();
       toast(d.detail || 'Failed to update name', 'err');
@@ -1594,32 +2492,111 @@ async function saveProfileBranding(e) {
   }
 }
 
-async function saveProfileKeys(e) {
-  e.preventDefault();
-  const gemini = $('profile-key-gemini').value.trim();
-  const lkUrl = $('profile-key-livekit-url').value.trim();
-  const lkKey = $('profile-key-livekit-key').value.trim();
-  const lkSec = $('profile-key-livekit-secret').value.trim();
-  
-  const settings = {};
-  if (gemini) settings["GOOGLE_API_KEY"] = gemini;
-  if (lkUrl) settings["LIVEKIT_URL"] = lkUrl;
-  if (lkKey) settings["LIVEKIT_API_KEY"] = lkKey;
-  if (lkSec) settings["LIVEKIT_API_SECRET"] = lkSec;
-  
+async function handleBrandingFileUpload(fileInput, targetInputId, statusSpanId, clearBtnId, previewImgId) {
+  const file = fileInput.files[0];
+  if (!file) return;
+  const status = $(statusSpanId);
+  if (status) {
+    status.textContent = "Uploading...";
+    status.style.color = "var(--muted)";
+  }
   try {
-    const res = await apiPost('/api/settings', { settings });
-    if (res.ok) {
-      toast('Gateway API credentials saved');
-      $('profile-key-gemini').value = '';
-      $('profile-key-livekit-secret').value = '';
-      loadProfileKeys();
-    } else {
-      const d = await res.json();
-      toast(d.detail || 'Failed to save credentials', 'err');
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Upload failed");
+    }
+    const data = await res.json();
+    $(targetInputId).value = data.url;
+    if (previewImgId) {
+      $(previewImgId).src = data.url;
+    }
+    if (status) {
+      status.textContent = "Uploaded!";
+      status.style.color = "var(--success)";
+    }
+    if (clearBtnId) {
+      $(clearBtnId).style.display = "inline-block";
     }
   } catch (err) {
-    toast('Error saving API keys', 'err');
+    console.error(err);
+    if (status) {
+      status.textContent = err.message || "Upload failed";
+      status.style.color = "var(--danger)";
+    }
+  }
+}
+
+function clearUploadedFile(fileInputId, statusSpanId, clearBtnId, previewImgId, defaultSrc, urlInputId) {
+  const fileInput = $(fileInputId);
+  if (fileInput) fileInput.value = "";
+  const status = $(statusSpanId);
+  if (status) status.textContent = "Not Configured";
+  const clearBtn = $(clearBtnId);
+  if (clearBtn) clearBtn.style.display = "none";
+  if (previewImgId && defaultSrc) {
+    $(previewImgId).src = defaultSrc;
+  }
+  if (urlInputId) {
+    $(urlInputId).value = "";
+  }
+}
+
+async function updateUserPassword(e) {
+  e.preventDefault();
+  const currentPass = $('profile-security-current-password').value;
+  const newPass = $('profile-security-new-password').value;
+  const confirmPass = $('profile-security-confirm-password').value;
+  
+  if (newPass !== confirmPass) {
+    toast('Passwords do not match', 'err');
+    return;
+  }
+  
+  try {
+    const sb = await getSupabase();
+    if (!sb) {
+      toast('Supabase client not initialized', 'err');
+      return;
+    }
+    
+    // Verify current password by trying to re-authenticate
+    const { data: { user } } = await sb.auth.getUser();
+    if (!user || !user.email) {
+      toast('User email not found', 'err');
+      return;
+    }
+    
+    const { error: verifyError } = await sb.auth.signInWithPassword({
+      email: user.email,
+      password: currentPass
+    });
+    
+    if (verifyError) {
+      toast('Incorrect current password', 'err');
+      return;
+    }
+    
+    // Update the password
+    const { error: updateError } = await sb.auth.updateUser({ password: newPass });
+    if (updateError) {
+      toast(updateError.message, 'err');
+    } else {
+      toast('Password updated successfully');
+      $('profile-security-current-password').value = '';
+      $('profile-security-new-password').value = '';
+      $('profile-security-confirm-password').value = '';
+      validatePasswordStrength(); // Refresh UI checks
+    }
+  } catch (err) {
+    console.error('Password update failed', err);
+    toast('Error updating password', 'err');
   }
 }
 
@@ -1840,9 +2817,9 @@ function setActiveNav(n,navTab=n){const active=document.querySelector(`.tab-btn[
 function switchTab(n,navTab=n){const labels={stats:['Dashboard','Operational overview of calls, activity, and system health.'],analytics:['Analytics','Review call performance, outcome mix, and trend charts.'],call:['Single Call','Run one outbound call from the console.'],batch:['Batch Call','Upload a CSV and dispatch calls in sequence.'],campaigns:['Campaigns','Create scheduled calling lists and review progress.'],calllogs:['Call Logs','Audit outcomes, recordings, and notes.'],transcripts:['Live Transcripts','Live call transcripts will appear here during active calls.'],agents:['Agents','Manage AI caller profiles, voices, and tools.'],prompt:['AI Prompt','Edit global instructions and supported placeholders.'],emailbooking:['Email Booking','Control appointment confirmation email behavior and templates.'],appointments:['Appointments','Review booked meetings and cancellations.'],crm:['CRM','See lead history and latest outcomes.'],logs:['Logs','Watch server and agent events.'],settings:['Settings','Configure integrations and credentials.'],setup:['Setup','Checklist and cost reference.'],inbound:['Inbound AI Receptionist','Monitor incoming calls and inbound agent activity.']};setActiveNav(n,navTab);document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));$(`tab-${n}`)?.classList.add('active');if($('page-title'))$('page-title').textContent=labels[n]?.[0]||'OutboundAI';if($('page-subtitle'))$('page-subtitle').textContent=labels[n]?.[1]||'';if(n==='stats'){loadStats();loadLiveConfig();loadRecentActivity();loadActiveCalls()}if(n==='analytics')loadStats();if(n==='campaigns')loadCampaigns();if(n==='agents')loadAgentProfiles();if(n==='prompt')loadPrompt();if(n==='emailbooking')loadEmailBooking();if(n==='appointments')loadAppointments();if(n==='calllogs')loadCalls(1);if(n==='crm')loadCRM();if(n==='transcripts'){loadActiveCalls();loadTranscripts(true)}if(n==='settings'){backToSettingsHub();loadSettings()}if(n==='logs')loadLogs();if(n==='inbound')loadInboundData()}
 const _charts={};function _mkChart(id,type,data){const c=$(id);if(!c||typeof Chart==='undefined')return;if(_charts[id])_charts[id].destroy();_charts[id]=new Chart(c,{type,data,options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}})}
 function _renderCharts(d){const C=['#5B5BD6','#16a34a','#f59e0b','#00b894','#ef4444','#64748b'];const o=d.outcomes||{},ol=Object.keys(o);_mkChart('chart-outcomes','doughnut',{labels:ol,datasets:[{data:Object.values(o),backgroundColor:C,borderWidth:0}]});const tl=d.timeline||[];_mkChart('chart-timeline','line',{labels:tl.map(x=>(x.date||'').slice(5)),datasets:[{label:'Calls',data:tl.map(x=>x.count),borderColor:'#5B5BD6',backgroundColor:'rgba(91,91,214,.10)',fill:true,tension:.35}]});const du=d.duration_by_outcome||{},dl=Object.keys(du);_mkChart('chart-duration','bar',{labels:dl,datasets:[{label:'Avg (s)',data:Object.values(du).map(v=>Math.round(v)),backgroundColor:C}]})}
-function setKpiLoading(){[['kpi-total','kpi-total-icon'],['kpi-booked','kpi-booked-icon'],['kpi-ni','kpi-ni-icon'],['kpi-rate','kpi-rate-icon'],['kpi-dur','kpi-dur-icon']].forEach(([valueId,iconId])=>{if($(valueId))$(valueId).textContent='—';if($(iconId)){$(iconId).className='kpi-icon';$(iconId).innerHTML='<span class="spinner"></span>'}})}
-function setKpiIcons(state='ready'){const error=state==='error';const icons=[['kpi-total-icon','calls',''],['kpi-booked-icon','booked','success'],['kpi-ni-icon','decline','danger'],['kpi-rate-icon','trend','warn'],['kpi-dur-icon','duration','']];icons.forEach(([id,name,cls])=>{const el=$(id);if(!el)return;el.className='kpi-icon '+(error?'danger':cls);el.innerHTML=error?'!':iconSvg(name)})}
-async function loadStats(){setKpiLoading();try{const d=await api('/api/stats');if(!d||d.detail)throw new Error(d?.detail||'Stats failed');if($('kpi-total'))$('kpi-total').textContent=d.total_calls??'—';if($('kpi-booked'))$('kpi-booked').textContent=d.booked??'—';if($('kpi-ni'))$('kpi-ni').textContent=d.not_interested??'—';if($('kpi-rate'))$('kpi-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('analytics-booking-rate'))$('analytics-booking-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('kpi-dur'))$('kpi-dur').textContent=d.avg_duration_seconds==null?'—':fmtDur(d.avg_duration_seconds);setKpiIcons('ready');_renderCharts(d)}catch(e){console.warn('Stats failed',e);[['kpi-total'],['kpi-booked'],['kpi-ni'],['kpi-rate'],['kpi-dur']].forEach(([id])=>{if($(id))$(id).textContent='—'});setKpiIcons('error')}}
+function setKpiLoading(){[['kpi-total','kpi-total-icon'],['kpi-booked','kpi-booked-icon'],['kpi-rate','kpi-rate-icon']].forEach(([valueId,iconId])=>{if($(valueId))$(valueId).textContent='—';if($(iconId)){$(iconId).className='kpi-icon';$(iconId).innerHTML='<span class="spinner"></span>'}})}
+function setKpiIcons(state='ready'){const error=state==='error';const icons=[['kpi-total-icon','calls',''],['kpi-booked-icon','booked','success'],['kpi-rate-icon','trend','warn']];icons.forEach(([id,name,cls])=>{const el=$(id);if(!el)return;el.className='kpi-icon '+(error?'danger':cls);el.innerHTML=error?'!':iconSvg(name)})}
+async function loadStats(){setKpiLoading();try{const d=await api('/api/stats');if(!d||d.detail)throw new Error(d?.detail||'Stats failed');if($('kpi-total'))$('kpi-total').textContent=d.total_calls??'—';if($('kpi-booked'))$('kpi-booked').textContent=d.booked??'—';if($('kpi-rate'))$('kpi-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('analytics-booking-rate'))$('analytics-booking-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');setKpiIcons('ready');_renderCharts(d)}catch(e){console.warn('Stats failed',e);[['kpi-total'],['kpi-booked'],['kpi-rate']].forEach(([id])=>{if($(id))$(id).textContent='—'});setKpiIcons('error')}}
 function normalizeServiceState(value){if(value&&typeof value==='object')return value.state||'missing';if(value===true)return'healthy';if(value===false)return'missing';return'missing'}
 function renderConnectionHealth(services={},unreachable=false){const rows=[['chip-livekit','livekit','LiveKit'],['chip-gemini','gemini','Gemini'],['chip-supabase','supabase','Supabase'],['chip-vobiz','sip','SIP']];const health=[];rows.forEach(([id,key,label])=>{const state=unreachable?'failed':normalizeServiceState(services[key]),ready=state==='healthy'||state==='configured',cls=ready?'ok':'err',text=state==='healthy'?'Healthy':state==='configured'?'Configured':'Missing or failed',color=ready?'var(--success)':'var(--danger)';const e=$(id);if(e)e.className='chip '+cls;health.push(`<div class="health-pill"><span>${label}</span><span style="color:${color}">${text}</span></div>`)});if($('dashboard-health'))$('dashboard-health').innerHTML=health.join('')}
 async function loadLiveConfig(){try{const r=await fetch('/api/health',{cache:'no-store'});if(!r.ok)throw new Error('Health unavailable');const h=await r.json();renderConnectionHealth(h.services||{},!h.services)}catch(e){renderConnectionHealth({},true)}}
@@ -2074,8 +3051,19 @@ function openInboundTranscriptRoom(room) {
   loadInboundData();
 }
 
+async function loadUserData() {
+  try {
+    const profile = await api('/api/profile');
+    const displayName = profile.user_name || 'User';
+    updateUserInitials(displayName);
+    updateDynamicGreeting(displayName);
+  } catch (err) {
+    console.warn("Failed to load user data for topbar/greeting", err);
+  }
+}
+
 let _appInitialized=false;
-function initAppData(){if(_appInitialized)return;_appInitialized=true;applyIcons();renderActiveCalls();loadActiveCalls();loadStats();loadLiveConfig();loadRecentActivity();loadAgentProfiles();loadInboundData();scheduleLogsRefresh();setInterval(loadLiveConfig,30000);setInterval(loadActiveCalls,5000);setInterval(()=>{const active=document.querySelector('.tab-btn.active')?.dataset.tab;if(active==='stats'||active==='analytics'){loadStats();if(active==='stats')loadRecentActivity()}if(active==='inbound'){loadInboundData()}},10000)}document.addEventListener('DOMContentLoaded',()=>{bootstrapAuth()});
+function initAppData(){if(_appInitialized)return;_appInitialized=true;applyIcons();loadUserData();renderActiveCalls();loadActiveCalls();loadStats();loadLiveConfig();loadRecentActivity();loadAgentProfiles();loadInboundData();scheduleLogsRefresh();setInterval(loadLiveConfig,30000);setInterval(loadActiveCalls,5000);setInterval(()=>{const active=document.querySelector('.tab-btn.active')?.dataset.tab;if(active==='stats'||active==='analytics'){loadStats();if(active==='stats')loadRecentActivity()}if(active==='inbound'){loadInboundData()}},10000)}document.addEventListener('DOMContentLoaded',()=>{bootstrapAuth()});
 let simRoom=null,simAudioEl=null,simAudioTrack=null;async function startSimulatedCall(){try{toast('Starting simulated AI call...','info');const r=await fetch('/api/simulate-call',{method:'POST'}),d=await r.json();if(!r.ok){toast(d.detail||'Failed to start simulation','err');return}simRoom=new LivekitClient.Room();$('stop-sim-btn').disabled=false;await simRoom.connect(d.livekit_url,d.token);await simRoom.localParticipant.setMicrophoneEnabled(true);toast('Microphone connected','ok');simRoom.on('trackSubscribed',track=>{if(track.kind==='audio'){if(!simAudioEl){simAudioEl=document.createElement('audio');simAudioEl.autoplay=true;simAudioEl.controls=true;simAudioEl.playsInline=true;document.body.appendChild(simAudioEl)}simAudioTrack=track;track.attach(simAudioEl);simAudioEl.play().catch(()=>toast('Audio autoplay blocked','err'))}});simRoom.on('disconnected',()=>cleanupSimulatedCall('Simulation disconnected'))}catch(e){console.error(e);toast(e.message||'Simulation failed','err')}}async function stopSimulatedCall(){await cleanupSimulatedCall('Simulation stopped')}async function cleanupSimulatedCall(m){try{if(simRoom){try{await simRoom.localParticipant.setMicrophoneEnabled(false)}catch(e){}try{simRoom.disconnect()}catch(e){}}if(simAudioTrack&&simAudioEl)try{simAudioTrack.detach(simAudioEl)}catch(e){}if(simAudioEl){simAudioEl.pause();simAudioEl.remove();simAudioEl=null}}finally{simRoom=null;simAudioTrack=null;if($('stop-sim-btn'))$('stop-sim-btn').disabled=true;if(m)toast(m,'info')}}
 </script>
 </body>
