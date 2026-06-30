@@ -505,6 +505,7 @@ aside#profile-drawer {
         <button class="nav-group-toggle" type="button" onclick="toggleNavGroup('admin')"><span class="tab-icon">Ad</span>Admin</button>
         <div class="nav-children">
           <button class="tab-btn" data-tab="agents" data-group="admin" onclick="switchTab('agents')">Agents</button>
+          <button class="tab-btn" data-tab="knowledge" data-group="admin" onclick="switchTab('knowledge')">Company Knowledge</button>
           <button class="tab-btn" data-tab="prompt" data-group="admin" onclick="switchTab('prompt')">AI Prompt</button>
           <button class="tab-btn" data-tab="setup" data-group="admin" onclick="switchTab('setup')">Setup</button>
           <button class="tab-btn" data-tab="logs" data-group="admin" onclick="switchTab('logs')">Logs</button>
@@ -664,7 +665,13 @@ aside#profile-drawer {
       <button type="submit" class="btn btn-primary" id="place-call-btn">Place Call</button>
       <button type="button" class="btn btn-purple" onclick="startSimulatedCall()">Start Simulated Call</button>
       <button type="button" class="btn btn-secondary" id="stop-sim-btn" onclick="stopSimulatedCall()" disabled>Stop Simulated Call</button>
-    </form></div><div class="card"><div class="card-title">Call Status</div><div class="status-list"><div class="status-row"><span>Status</span><strong id="call-dispatch-status">Ready</strong></div><div class="status-row"><span>Selected agent</span><strong id="call-selected-agent">Default</strong></div><div class="status-row"><span>Duration</span><strong id="call-duration">--:--</strong></div><div class="status-row"><span>Room / call ID</span><strong id="call-room-id">Waiting</strong></div><div class="status-row"><span>Latest outcome</span><strong id="call-latest-outcome">Pending</strong></div></div><div class="empty-state" id="call-transcript-placeholder" style="margin-top:16px">Live transcript will appear here when the backend provides transcript events.</div></div></div></div>
+    </form></div><div class="card"><div class="card-title">Call Status</div><div class="status-list"><div class="status-row"><span>Status</span><strong id="call-dispatch-status">Ready</strong></div><div class="status-row"><span>Selected agent</span><strong id="call-selected-agent">Default</strong></div><div class="status-row"><span>Duration</span><strong id="call-duration">--:--</strong></div><div class="status-row"><span>Room / call ID</span><strong id="call-room-id">Waiting</strong></div><div class="status-row"><span>Latest outcome</span><strong id="call-latest-outcome">Pending</strong></div></div><div class="empty-state" id="call-transcript-placeholder" style="margin-top:16px">Live transcript will appear here when the backend provides transcript events.</div></div></div>
+    <!-- Debug Panel -->
+    <!-- <div class="card" id="call-debug-panel" style="display:none; margin-top: 16px; border: 2px solid var(--border); background: var(--card); color: var(--text);">
+      <div class="card-title" id="debug-panel-title" style="font-weight: 700; color: var(--text); margin-bottom: 0;">🔴 CALL DEBUG</div>
+      <div id="debug-panel-content" style="font-family: monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.5; margin-top: 12px;"></div>
+    </div> -->
+</div>
 
 <!-- BATCH CALL ══════════════════ -->
 <div id="tab-batch" class="tab-panel"><div class="section-label">CSV Dialer</div><div class="split-grid"><div class="card">
@@ -846,6 +853,57 @@ aside#profile-drawer {
         <thead><tr><th>Name</th><th>Voice</th><th>Model</th><th>Default</th><th>Actions</th></tr></thead>
         <tbody id="agents-tbody"><tr class="empty-row"><td colspan="5">No profiles yet</td></tr></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ COMPANY KNOWLEDGE ══════════════════ -->
+<div id="tab-knowledge" class="tab-panel">
+  <div class="section-label">Company Knowledge</div>
+  <div class="split-grid">
+    <div class="card">
+      <div class="card-title">Upload Company Knowledge</div>
+      <div class="upload-dropzone" id="knowledge-dropzone" onclick="document.getElementById('kb-file-input').click()">
+        <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">Drag & Drop files here or click to browse</div>
+        <p>Supported: PDF, DOCX, TXT (Max 5MB)</p>
+      </div>
+      <input type="file" id="kb-file-input" accept=".pdf,.docx,.txt" style="display: none;" onchange="uploadKbFile(this)"/>
+      <div id="kb-upload-err" class="inline-err" style="margin-top: 10px;"></div>
+
+      <div class="card-title" style="margin-top: 24px; margin-bottom: 12px;">Uploaded Documents</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Document Name</th>
+              <th>Type</th>
+              <th>Uploaded At</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="kb-tbody">
+            <tr class="empty-row"><td colspan="5">No documents uploaded yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <div class="helper-box" style="margin-top: 0;">
+      <strong>Company Knowledge Tips</strong>
+      <ul style="margin-left: 20px; margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+        <li>Upload company profile.</li>
+        <li>Upload FAQs.</li>
+        <li>Upload pricing.</li>
+        <li>Upload services.</li>
+        <li>Upload policies.</li>
+        <li>Upload brochures.</li>
+        <li>Upload product catalogues.</li>
+        <li>Every AI agent in this company automatically uses this knowledge.</li>
+        <li>Knowledge belongs to the company, not individual agents.</li>
+        <li>If information is unavailable, the AI must reply:<br><em>"I don't have that information right now."</em></li>
+        <li>AI must never invent company information.</li>
+      </ul>
     </div>
   </div>
 </div>
@@ -2047,26 +2105,22 @@ async function bootstrapAuth(){
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 // Onboarding & Profile Functionality
 
-function syncColorInputs(pickerId, hexId, previewId, labelId) {
+function syncColorInputs(pickerId, hexId, previewId) {
   const picker = $(pickerId);
   const hex = $(hexId);
   const preview = $(previewId);
-  const label = $(labelId);
   if (picker && hex) {
     picker.addEventListener('input', () => {
-      const colorVal = picker.value.toUpperCase();
-      hex.value = colorVal;
-      if (preview) preview.style.backgroundColor = colorVal;
-      if (label) label.textContent = colorVal;
+      hex.value = picker.value.toUpperCase();
+      if (preview) preview.style.backgroundColor = picker.value;
     });
     hex.addEventListener('input', () => {
       if (/^#[0-9A-Fa-f]{6}$/.test(hex.value)) {
-        const colorVal = hex.value.toUpperCase();
-        picker.value = colorVal;
-        if (preview) preview.style.backgroundColor = colorVal;
-        if (label) label.textContent = colorVal;
+        picker.value = hex.value;
+        if (preview) preview.style.backgroundColor = hex.value;
       }
     });
   }
@@ -2076,9 +2130,10 @@ function syncColorInputs(pickerId, hexId, previewId, labelId) {
 document.addEventListener('DOMContentLoaded', () => {
   syncColorInputs('onboard-brand-primary', 'onboard-brand-primary-hex');
   syncColorInputs('onboard-brand-secondary', 'onboard-brand-secondary-hex');
-  syncColorInputs('profile-brand-primary', 'profile-brand-primary-hex', 'profile-brand-primary-preview', 'profile-brand-primary-hex-label');
-  syncColorInputs('profile-brand-secondary', 'profile-brand-secondary-hex', 'profile-brand-secondary-preview', 'profile-brand-secondary-hex-label');
+  syncColorInputs('profile-brand-primary', 'profile-brand-primary-hex', 'profile-brand-primary-preview');
+  syncColorInputs('profile-brand-secondary', 'profile-brand-secondary-hex', 'profile-brand-secondary-preview');
   setupBrandingDropzones();
+  setupKbDropzone();
 });
 
 // Setup drag and drop for profile branding logo/favicon
@@ -2174,7 +2229,7 @@ function switchProfileTab(tab) {
 }
 
 function getInitials(name) {
-  if (!name || name === 'Not Configured') return "NC";
+  if (!name) return "U";
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) {
     return (parts[0][0] + parts[1][0]).toUpperCase();
@@ -2189,7 +2244,7 @@ function updateUserInitials(name) {
   const initials = getInitials(name);
   if ($('topbar-user-avatar')) $('topbar-user-avatar').textContent = initials;
   if ($('profile-avatar-large')) $('profile-avatar-large').textContent = initials;
-  if ($('topbar-user-name')) $('topbar-user-name').textContent = name || 'Not Configured';
+  if ($('topbar-user-name')) $('topbar-user-name').textContent = name || 'User';
 }
 
 function updateDynamicGreeting(userName) {
@@ -2208,54 +2263,32 @@ function updateDynamicGreeting(userName) {
 async function loadBillingLogs() {
   const tbody = $('profile-billing-logs-tbody');
   if (!tbody) return;
-  tbody.innerHTML = `<tr class="empty-row"><td colspan="3" style="padding: 16px; text-align: center; color: var(--muted);">No transaction history available.</td></tr>`;
-}
-
-function validatePasswordStrength() {
-  const newPass = $('profile-security-new-password').value;
-  const confirmPass = $('profile-security-confirm-password').value;
   
-  const hasLength = newPass.length >= 8;
-  const hasUppercase = /[A-Z]/.test(newPass);
-  const hasNumber = /[0-9]/.test(newPass);
+  tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:16px;"><span class="spinner" style="display:inline-block;"></span></td></tr>`;
   
-  const updateReq = (id, isValid) => {
-    const el = $(id);
-    if (!el) return;
-    const icon = el.querySelector('.indicator-icon');
-    if (isValid) {
-      el.classList.add('valid');
-      el.classList.remove('invalid');
-      if (icon) icon.textContent = '✓';
-    } else {
-      el.classList.remove('valid');
-      if (newPass.length > 0) {
-        el.classList.add('invalid');
-        if (icon) icon.textContent = '✗';
-      } else {
-        el.classList.remove('invalid');
-        if (icon) icon.textContent = '○';
-      }
+  try {
+    const rows = await api('/api/calls?page=1&limit=10');
+    const data = Array.isArray(rows) ? rows : [];
+    if (!data.length) {
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:16px; color:var(--muted);">No transactions found.</td></tr>`;
+      return;
     }
-  };
-  
-  updateReq('req-length', hasLength);
-  updateReq('req-uppercase', hasUppercase);
-  updateReq('req-number', hasNumber);
-  
-  const passwordsMatch = newPass === confirmPass;
-  const matchErr = $('password-match-error');
-  if (matchErr) {
-    if (confirmPass.length > 0 && !passwordsMatch) {
-      matchErr.style.display = 'block';
-    } else {
-      matchErr.style.display = 'none';
-    }
-  }
-  
-  const submitBtn = $('profile-security-submit');
-  if (submitBtn) {
-    submitBtn.disabled = !(hasLength && hasUppercase && hasNumber && passwordsMatch);
+    
+    tbody.innerHTML = data.map(c => {
+      const date = c.timestamp ? new Date(c.timestamp).toLocaleDateString() : '-';
+      const lead = esc(c.lead_name || 'lead');
+      const phone = esc(c.phone_number || c.phone || '');
+      const desc = `Call attempt to ${lead} (${phone})`;
+      const amount = `-Rs 1.00`;
+      return `<tr>
+        <td style="padding: 8px 10px; color: var(--muted);">${date}</td>
+        <td style="padding: 8px 10px; font-weight: 500;">${desc}</td>
+        <td style="padding: 8px 10px; text-align: right; font-weight: 600; color: var(--danger);">${amount}</td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    console.warn("Failed to load billing transactions", err);
+    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:16px; color:var(--danger);">Failed to load transactions.</td></tr>`;
   }
 }
 
@@ -2265,24 +2298,7 @@ async function loadProfileData() {
     
     // User Profile Info
     $('profile-user-name').value = profile.user_name || '';
-    
-    // Resolve email (fallback to Supabase auth session)
-    let email = profile.user_email;
-    if (!email) {
-      try {
-        const sb = await getSupabase();
-        if (sb) {
-          const { data: { user } } = await sb.auth.getUser();
-          if (user && user.email) {
-            email = user.email;
-          }
-        }
-      } catch (err) {
-        console.warn("Could not fetch user email from Supabase", err);
-      }
-    }
-    email = email || 'Not Configured';
-    $('profile-user-email').value = email === 'Not Configured' ? '' : email;
+    $('profile-user-email').value = profile.user_email || '';
     
     // Timezone & Language settings cached in localStorage
     const userTz = localStorage.getItem('user-timezone') || 'Asia/Kolkata';
@@ -2291,41 +2307,35 @@ async function loadProfileData() {
     if ($('profile-user-language')) $('profile-user-language').value = userLang;
     
     // Initials & Large Avatar in form
-    const initials = getInitials(profile.user_name || email);
+    const initials = getInitials(profile.user_name || profile.user_email);
     if ($('profile-avatar-large')) {
       $('profile-avatar-large').textContent = initials;
     }
     if ($('profile-display-header-name')) {
-      $('profile-display-header-name').textContent = profile.user_name || 'Not Configured';
+      $('profile-display-header-name').textContent = profile.user_name || 'User Name';
     }
     if ($('profile-display-header-email')) {
-      $('profile-display-header-email').textContent = email;
+      $('profile-display-header-email').textContent = profile.user_email || '';
     }
     
     // Topbar update
-    updateUserInitials(profile.user_name || email);
+    updateUserInitials(profile.user_name || profile.user_email);
     updateDynamicGreeting(profile.user_name);
     
     // Tenant Workspace Details
-    if ($('profile-workspace-company')) $('profile-workspace-company').textContent = profile.tenant_name || 'Not Configured';
+    if ($('profile-workspace-company')) $('profile-workspace-company').textContent = profile.tenant_name || '-';
     if ($('profile-workspace-id')) {
       const tenantId = (window.__authContext && window.__authContext.tenant_id) || '-';
-      $('profile-workspace-id').textContent = tenantId === '-' ? 'Not Configured' : tenantId;
+      $('profile-workspace-id').textContent = tenantId;
     }
-    if ($('profile-workspace-plan')) $('profile-workspace-plan').textContent = profile.billing_mode || 'Not Configured';
-    if ($('profile-status-badge')) {
-      if (profile.tenant_status) {
-        $('profile-status-badge').innerHTML = badge(profile.tenant_status);
-      } else {
-        $('profile-status-badge').textContent = 'Not Configured';
-      }
-    }
-    if ($('profile-workspace-created')) $('profile-workspace-created').textContent = profile.account_creation_date ? fmtTs(profile.account_creation_date) : 'Not Configured';
+    if ($('profile-workspace-plan')) $('profile-workspace-plan').textContent = profile.billing_mode || '-';
+    if ($('profile-status-badge')) $('profile-status-badge').innerHTML = badge(profile.tenant_status);
+    if ($('profile-workspace-created')) $('profile-workspace-created').textContent = fmtTs(profile.account_creation_date);
     
     // Wallet & Billing Mode
-    if ($('profile-billing-mode')) $('profile-billing-mode').textContent = profile.billing_mode || 'Not Configured';
+    if ($('profile-billing-mode')) $('profile-billing-mode').textContent = profile.billing_mode;
     if ($('profile-wallet-balance')) {
-      $('profile-wallet-balance').textContent = profile.wallet_balance != null ? `Rs ${(profile.wallet_balance).toFixed(2)}` : 'Rs 0.00';
+      $('profile-wallet-balance').textContent = `Rs ${(profile.wallet_balance ?? 0.0).toFixed(2)}`;
     }
     
     // Progress Bar Calculation
@@ -2355,9 +2365,6 @@ async function loadProfileData() {
     if ($('profile-brand-primary-preview')) {
       $('profile-brand-primary-preview').style.backgroundColor = primary;
     }
-    if ($('profile-brand-primary-hex-label')) {
-      $('profile-brand-primary-hex-label').textContent = primary;
-    }
     
     // Secondary Color
     const secondary = branding.secondary_color || '#00b894';
@@ -2365,9 +2372,6 @@ async function loadProfileData() {
     $('profile-brand-secondary-hex').value = secondary;
     if ($('profile-brand-secondary-preview')) {
       $('profile-brand-secondary-preview').style.backgroundColor = secondary;
-    }
-    if ($('profile-brand-secondary-hex-label')) {
-      $('profile-brand-secondary-hex-label').textContent = secondary;
     }
     
     // Logo image and favicon previews
@@ -2381,7 +2385,7 @@ async function loadProfileData() {
       $('profile-logo-status').textContent = 'Configured';
     } else {
       $('profile-logo-clear-btn').style.display = 'none';
-      $('profile-logo-status').textContent = 'Not Configured';
+      $('profile-logo-status').textContent = 'No file selected';
     }
     
     const faviconUrl = branding.favicon_url || '';
@@ -2394,32 +2398,7 @@ async function loadProfileData() {
       $('profile-favicon-status').textContent = 'Configured';
     } else {
       $('profile-favicon-clear-btn').style.display = 'none';
-      $('profile-favicon-status').textContent = 'Not Configured';
-    }
-    
-    // Security tab update
-    if ($('security-overview-email')) {
-      $('security-overview-email').textContent = email;
-    }
-    if ($('security-overview-status')) {
-      $('security-overview-status').textContent = 'Active (Encrypted)';
-    }
-    
-    // Populate security-overview-last-change from Supabase user updated_at field
-    if ($('security-overview-last-change')) {
-      let lastChange = 'Not Configured';
-      try {
-        const sb = await getSupabase();
-        if (sb) {
-          const { data: { user } } = await sb.auth.getUser();
-          if (user && user.updated_at) {
-            lastChange = fmtTs(user.updated_at);
-          }
-        }
-      } catch (err) {
-        console.warn("Could not fetch user update timestamp", err);
-      }
-      $('security-overview-last-change').textContent = lastChange;
+      $('profile-favicon-status').textContent = 'No file selected';
     }
     
   } catch (err) {
@@ -2537,7 +2516,7 @@ function clearUploadedFile(fileInputId, statusSpanId, clearBtnId, previewImgId, 
   const fileInput = $(fileInputId);
   if (fileInput) fileInput.value = "";
   const status = $(statusSpanId);
-  if (status) status.textContent = "Not Configured";
+  if (status) status.textContent = "No file selected";
   const clearBtn = $(clearBtnId);
   if (clearBtn) clearBtn.style.display = "none";
   if (previewImgId && defaultSrc) {
@@ -2550,7 +2529,6 @@ function clearUploadedFile(fileInputId, statusSpanId, clearBtnId, previewImgId, 
 
 async function updateUserPassword(e) {
   e.preventDefault();
-  const currentPass = $('profile-security-current-password').value;
   const newPass = $('profile-security-new-password').value;
   const confirmPass = $('profile-security-confirm-password').value;
   
@@ -2566,37 +2544,46 @@ async function updateUserPassword(e) {
       return;
     }
     
-    // Verify current password by trying to re-authenticate
-    const { data: { user } } = await sb.auth.getUser();
-    if (!user || !user.email) {
-      toast('User email not found', 'err');
-      return;
-    }
-    
-    const { error: verifyError } = await sb.auth.signInWithPassword({
-      email: user.email,
-      password: currentPass
-    });
-    
-    if (verifyError) {
-      toast('Incorrect current password', 'err');
-      return;
-    }
-    
-    // Update the password
-    const { error: updateError } = await sb.auth.updateUser({ password: newPass });
-    if (updateError) {
-      toast(updateError.message, 'err');
+    const { error } = await sb.auth.updateUser({ password: newPass });
+    if (error) {
+      toast(error.message, 'err');
     } else {
       toast('Password updated successfully');
-      $('profile-security-current-password').value = '';
       $('profile-security-new-password').value = '';
       $('profile-security-confirm-password').value = '';
-      validatePasswordStrength(); // Refresh UI checks
     }
   } catch (err) {
     console.error('Password update failed', err);
     toast('Error updating password', 'err');
+  }
+}
+
+async function saveProfileKeys(e) {
+  e.preventDefault();
+  const gemini = $('profile-key-gemini').value.trim();
+  const lkUrl = $('profile-key-livekit-url').value.trim();
+  const lkKey = $('profile-key-livekit-key').value.trim();
+  const lkSec = $('profile-key-livekit-secret').value.trim();
+  
+  const settings = {};
+  if (gemini) settings["GOOGLE_API_KEY"] = gemini;
+  if (lkUrl) settings["LIVEKIT_URL"] = lkUrl;
+  if (lkKey) settings["LIVEKIT_API_KEY"] = lkKey;
+  if (lkSec) settings["LIVEKIT_API_SECRET"] = lkSec;
+  
+  try {
+    const res = await apiPost('/api/settings', { settings });
+    if (res.ok) {
+      toast('Gateway API credentials saved');
+      $('profile-key-gemini').value = '';
+      $('profile-key-livekit-secret').value = '';
+      loadProfileKeys();
+    } else {
+      const d = await res.json();
+      toast(d.detail || 'Failed to save credentials', 'err');
+    }
+  } catch (err) {
+    toast('Error saving API keys', 'err');
   }
 }
 
@@ -2814,12 +2801,12 @@ function fmtTs(ts){if(!ts)return'-';try{return new Date(ts).toLocaleString()}cat
 function togglePass(id,b){const i=$(id),show=i.type==='password';i.type=show?'text':'password';b.textContent=show?'Hide':'Show'}
 function toggleNavGroup(group){const el=document.querySelector(`.nav-group[data-group="${group}"]`);if(el)el.classList.toggle('open')}
 function setActiveNav(n,navTab=n){const active=document.querySelector(`.tab-btn[data-tab="${navTab}"]`)||document.querySelector(`.tab-btn[data-tab="${n}"]`);const group=active?.dataset.group;document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b===active));document.querySelectorAll('.nav-group').forEach(g=>g.classList.toggle('open',g.dataset.group===group));document.querySelectorAll('.nav-group-toggle').forEach(b=>b.classList.toggle('active',b.closest('.nav-group')?.dataset.group===group))}
-function switchTab(n,navTab=n){const labels={stats:['Dashboard','Operational overview of calls, activity, and system health.'],analytics:['Analytics','Review call performance, outcome mix, and trend charts.'],call:['Single Call','Run one outbound call from the console.'],batch:['Batch Call','Upload a CSV and dispatch calls in sequence.'],campaigns:['Campaigns','Create scheduled calling lists and review progress.'],calllogs:['Call Logs','Audit outcomes, recordings, and notes.'],transcripts:['Live Transcripts','Live call transcripts will appear here during active calls.'],agents:['Agents','Manage AI caller profiles, voices, and tools.'],prompt:['AI Prompt','Edit global instructions and supported placeholders.'],emailbooking:['Email Booking','Control appointment confirmation email behavior and templates.'],appointments:['Appointments','Review booked meetings and cancellations.'],crm:['CRM','See lead history and latest outcomes.'],logs:['Logs','Watch server and agent events.'],settings:['Settings','Configure integrations and credentials.'],setup:['Setup','Checklist and cost reference.'],inbound:['Inbound AI Receptionist','Monitor incoming calls and inbound agent activity.']};setActiveNav(n,navTab);document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));$(`tab-${n}`)?.classList.add('active');if($('page-title'))$('page-title').textContent=labels[n]?.[0]||'OutboundAI';if($('page-subtitle'))$('page-subtitle').textContent=labels[n]?.[1]||'';if(n==='stats'){loadStats();loadLiveConfig();loadRecentActivity();loadActiveCalls()}if(n==='analytics')loadStats();if(n==='campaigns')loadCampaigns();if(n==='agents')loadAgentProfiles();if(n==='prompt')loadPrompt();if(n==='emailbooking')loadEmailBooking();if(n==='appointments')loadAppointments();if(n==='calllogs')loadCalls(1);if(n==='crm')loadCRM();if(n==='transcripts'){loadActiveCalls();loadTranscripts(true)}if(n==='settings'){backToSettingsHub();loadSettings()}if(n==='logs')loadLogs();if(n==='inbound')loadInboundData()}
+function switchTab(n,navTab=n){const labels={stats:['Dashboard','Operational overview of calls, activity, and system health.'],analytics:['Analytics','Review call performance, outcome mix, and trend charts.'],call:['Single Call','Run one outbound call from the console.'],batch:['Batch Call','Upload a CSV and dispatch calls in sequence.'],campaigns:['Campaigns','Create scheduled calling lists and review progress.'],calllogs:['Call Logs','Audit outcomes, recordings, and notes.'],transcripts:['Live Transcripts','Live call transcripts will appear here during active calls.'],agents:['Agents','Manage AI caller profiles, voices, and tools.'],knowledge:['Company Knowledge','Upload and manage tenant-wide documentation used by all agent sessions.'],prompt:['AI Prompt','Edit global instructions and supported placeholders.'],emailbooking:['Email Booking','Control appointment confirmation email behavior and templates.'],appointments:['Appointments','Review booked meetings and cancellations.'],crm:['CRM','See lead history and latest outcomes.'],logs:['Logs','Watch server and agent events.'],settings:['Settings','Configure integrations and credentials.'],setup:['Setup','Checklist and cost reference.'],inbound:['Inbound AI Receptionist','Monitor incoming calls and inbound agent activity.']};setActiveNav(n,navTab);document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));$(`tab-${n}`)?.classList.add('active');if($('page-title'))$('page-title').textContent=labels[n]?.[0]||'OutboundAI';if($('page-subtitle'))$('page-subtitle').textContent=labels[n]?.[1]||'';if(n==='stats'){loadStats();loadLiveConfig();loadRecentActivity();loadActiveCalls()}if(n==='analytics')loadStats();if(n==='campaigns')loadCampaigns();if(n==='agents')loadAgentProfiles();if(n==='knowledge')loadKnowledgeDocuments();if(n==='prompt')loadPrompt();if(n==='emailbooking')loadEmailBooking();if(n==='appointments')loadAppointments();if(n==='calllogs')loadCalls(1);if(n==='crm')loadCRM();if(n==='transcripts'){loadActiveCalls();loadTranscripts(true)}if(n==='settings'){backToSettingsHub();loadSettings()}if(n==='logs')loadLogs();if(n==='inbound')loadInboundData()}
 const _charts={};function _mkChart(id,type,data){const c=$(id);if(!c||typeof Chart==='undefined')return;if(_charts[id])_charts[id].destroy();_charts[id]=new Chart(c,{type,data,options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}})}
 function _renderCharts(d){const C=['#5B5BD6','#16a34a','#f59e0b','#00b894','#ef4444','#64748b'];const o=d.outcomes||{},ol=Object.keys(o);_mkChart('chart-outcomes','doughnut',{labels:ol,datasets:[{data:Object.values(o),backgroundColor:C,borderWidth:0}]});const tl=d.timeline||[];_mkChart('chart-timeline','line',{labels:tl.map(x=>(x.date||'').slice(5)),datasets:[{label:'Calls',data:tl.map(x=>x.count),borderColor:'#5B5BD6',backgroundColor:'rgba(91,91,214,.10)',fill:true,tension:.35}]});const du=d.duration_by_outcome||{},dl=Object.keys(du);_mkChart('chart-duration','bar',{labels:dl,datasets:[{label:'Avg (s)',data:Object.values(du).map(v=>Math.round(v)),backgroundColor:C}]})}
-function setKpiLoading(){[['kpi-total','kpi-total-icon'],['kpi-booked','kpi-booked-icon'],['kpi-rate','kpi-rate-icon']].forEach(([valueId,iconId])=>{if($(valueId))$(valueId).textContent='—';if($(iconId)){$(iconId).className='kpi-icon';$(iconId).innerHTML='<span class="spinner"></span>'}})}
-function setKpiIcons(state='ready'){const error=state==='error';const icons=[['kpi-total-icon','calls',''],['kpi-booked-icon','booked','success'],['kpi-rate-icon','trend','warn']];icons.forEach(([id,name,cls])=>{const el=$(id);if(!el)return;el.className='kpi-icon '+(error?'danger':cls);el.innerHTML=error?'!':iconSvg(name)})}
-async function loadStats(){setKpiLoading();try{const d=await api('/api/stats');if(!d||d.detail)throw new Error(d?.detail||'Stats failed');if($('kpi-total'))$('kpi-total').textContent=d.total_calls??'—';if($('kpi-booked'))$('kpi-booked').textContent=d.booked??'—';if($('kpi-rate'))$('kpi-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('analytics-booking-rate'))$('analytics-booking-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');setKpiIcons('ready');_renderCharts(d)}catch(e){console.warn('Stats failed',e);[['kpi-total'],['kpi-booked'],['kpi-rate']].forEach(([id])=>{if($(id))$(id).textContent='—'});setKpiIcons('error')}}
+function setKpiLoading(){[['kpi-total','kpi-total-icon'],['kpi-booked','kpi-booked-icon'],['kpi-ni','kpi-ni-icon'],['kpi-rate','kpi-rate-icon'],['kpi-dur','kpi-dur-icon']].forEach(([valueId,iconId])=>{if($(valueId))$(valueId).textContent='—';if($(iconId)){$(iconId).className='kpi-icon';$(iconId).innerHTML='<span class="spinner"></span>'}})}
+function setKpiIcons(state='ready'){const error=state==='error';const icons=[['kpi-total-icon','calls',''],['kpi-booked-icon','booked','success'],['kpi-ni-icon','decline','danger'],['kpi-rate-icon','trend','warn'],['kpi-dur-icon','duration','']];icons.forEach(([id,name,cls])=>{const el=$(id);if(!el)return;el.className='kpi-icon '+(error?'danger':cls);el.innerHTML=error?'!':iconSvg(name)})}
+async function loadStats(){setKpiLoading();try{const d=await api('/api/stats');if(!d||d.detail)throw new Error(d?.detail||'Stats failed');if($('kpi-total'))$('kpi-total').textContent=d.total_calls??'—';if($('kpi-booked'))$('kpi-booked').textContent=d.booked??'—';if($('kpi-ni'))$('kpi-ni').textContent=d.not_interested??'—';if($('kpi-rate'))$('kpi-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('analytics-booking-rate'))$('analytics-booking-rate').textContent=(d.booking_rate_percent??'—')+(d.booking_rate_percent!=null?'%':'');if($('kpi-dur'))$('kpi-dur').textContent=d.avg_duration_seconds==null?'—':fmtDur(d.avg_duration_seconds);setKpiIcons('ready');_renderCharts(d)}catch(e){console.warn('Stats failed',e);[['kpi-total'],['kpi-booked'],['kpi-ni'],['kpi-rate'],['kpi-dur']].forEach(([id])=>{if($(id))$(id).textContent='—'});setKpiIcons('error')}}
 function normalizeServiceState(value){if(value&&typeof value==='object')return value.state||'missing';if(value===true)return'healthy';if(value===false)return'missing';return'missing'}
 function renderConnectionHealth(services={},unreachable=false){const rows=[['chip-livekit','livekit','LiveKit'],['chip-gemini','gemini','Gemini'],['chip-supabase','supabase','Supabase'],['chip-vobiz','sip','SIP']];const health=[];rows.forEach(([id,key,label])=>{const state=unreachable?'failed':normalizeServiceState(services[key]),ready=state==='healthy'||state==='configured',cls=ready?'ok':'err',text=state==='healthy'?'Healthy':state==='configured'?'Configured':'Missing or failed',color=ready?'var(--success)':'var(--danger)';const e=$(id);if(e)e.className='chip '+cls;health.push(`<div class="health-pill"><span>${label}</span><span style="color:${color}">${text}</span></div>`)});if($('dashboard-health'))$('dashboard-health').innerHTML=health.join('')}
 async function loadLiveConfig(){try{const r=await fetch('/api/health',{cache:'no-store'});if(!r.ok)throw new Error('Health unavailable');const h=await r.json();renderConnectionHealth(h.services||{},!h.services)}catch(e){renderConnectionHealth({},true)}}
@@ -2840,7 +2827,7 @@ document.addEventListener('change',e=>{if(e.target?.id==='f-agent-profile'&&$('c
 function setCallStatus({status,duration,room,outcome,transcript}={}){if(status!=null&&$('call-dispatch-status'))$('call-dispatch-status').textContent=status;if(duration!=null&&$('call-duration'))$('call-duration').textContent=duration;if(room!=null&&$('call-room-id'))$('call-room-id').textContent=room;if(outcome!=null&&$('call-latest-outcome'))$('call-latest-outcome').textContent=outcome;if(transcript!=null&&$('call-transcript-placeholder'))$('call-transcript-placeholder').textContent=transcript}
 function setButtonLoading(btn,isLoading,text='Dispatching...'){if(!btn)return;if(isLoading){btn.dataset.originalText=btn.textContent;btn.disabled=true;btn.innerHTML=`<span class="spinner" style="width:13px;height:13px;border-color:rgba(255,255,255,.35);border-top-color:#fff"></span>${text}`}else{btn.disabled=false;btn.textContent=btn.dataset.originalText||'Place Call'}}
 async function pollCallOutcome(phone,lead,startedAt,activeId=null){const deadline=Date.now()+60000;while(Date.now()<deadline){await new Promise(r=>setTimeout(r,5000));try{await loadActiveCalls();const rows=await api('/api/calls?page=1&limit=20'),data=Array.isArray(rows)?rows:[];const match=data.find(c=>{const samePhone=(c.phone_number||c.phone||'')===phone;if(!samePhone)return false;if(lead&&lead!=='there'&&c.lead_name&&c.lead_name!==lead)return false;const ts=c.timestamp?new Date(c.timestamp).getTime():0;return !ts||ts>=startedAt-10000});if(match){setCallStatus({status:'Completed',duration:match.duration_seconds==null?'—':fmtDur(match.duration_seconds),room:$('call-room-id')?.textContent||'—',outcome:(match.outcome||'unknown').replace(/_/g,' ')});loadRecentActivity();return}}catch(e){console.warn('Call outcome poll failed',e)}}}
-$('call-form')?.addEventListener('submit',async e=>{e.preventDefault();showErr('call-err','');const phone=$('f-phone').value.trim();if(!phone.startsWith('+')){showErr('call-err','Phone must start with + (E.164 format)');return}const defaultBiz=(window.__branding&&window.__branding.default_business_name)||(window.__branding&&window.__branding.company_name)||'our company';const defaultSvc=(window.__branding&&window.__branding.default_service_type)||'our service';const body={phone,lead_name:$('f-lead').value.trim()||'there',business_name:$('f-biz').value.trim()||defaultBiz,service_type:$('f-svc').value.trim()||defaultSvc,agent_profile_id:$('f-agent-profile').value||null,system_prompt:$('f-custom-toggle').checked?$('f-custom-prompt').value.trim()||null:null};const btn=$('place-call-btn')||e.submitter;const startedAt=Date.now();setButtonLoading(btn,true);setCallStatus({status:'Dispatching',duration:'—',room:'Creating...',outcome:'Pending',transcript:'Waiting for live transcript events from the backend.'});try{const r=await apiPost('/api/call',body),d=await r.json().catch(()=>({}));if(!r.ok){const msg=d.detail||'Dispatch failed';showErr('call-err',msg);setCallStatus({status:'Failed',duration:'—',room:'—',outcome:'Error',transcript:msg});toast(msg,'err');setButtonLoading(btn,false);return}const room=d.room||d.call_id||d.id||'—';_currentCallRoom=room;setCallStatus({status:'Dispatched',duration:'0s',room,outcome:'Waiting for answer',transcript:'Waiting for transcript activity.'});toast('Call dispatched','ok');setButtonLoading(btn,false);loadActiveCalls();pollCallOutcome(phone,body.lead_name,startedAt,room).catch(err=>console.warn('Outcome polling failed',err))}catch(err){const msg=err.message||'Network error';showErr('call-err',msg);setCallStatus({status:'Failed',duration:'—',room:'—',outcome:'Error',transcript:msg});toast(msg,'err');setButtonLoading(btn,false)}});
+$('call-form')?.addEventListener('submit',async e=>{e.preventDefault();showErr('call-err','');const phone=$('f-phone').value.trim();if(!phone.startsWith('+')){showErr('call-err','Phone must start with + (E.164 format)');return}const defaultBiz=(window.__branding&&window.__branding.default_business_name)||(window.__branding&&window.__branding.company_name)||'our company';const defaultSvc=(window.__branding&&window.__branding.default_service_type)||'our service';const body={phone,lead_name:$('f-lead').value.trim()||'there',business_name:$('f-biz').value.trim()||defaultBiz,service_type:$('f-svc').value.trim()||defaultSvc,agent_profile_id:$('f-agent-profile').value||null,system_prompt:$('f-custom-toggle').checked?$('f-custom-prompt').value.trim()||null:null};const btn=$('place-call-btn')||e.submitter;const startedAt=Date.now();setButtonLoading(btn,true);setCallStatus({status:'Dispatching',duration:'—',room:'Creating...',outcome:'Pending',transcript:'Waiting for live transcript events from the backend.'});try{const r=await apiPost('/api/call',body),d=await r.json().catch(()=>({}));if(!r.ok){const msg=d.detail||'Dispatch failed';showErr('call-err',msg);setCallStatus({status:'Failed',duration:'—',room:'—',outcome:'Error',transcript:msg});toast(msg,'err');setButtonLoading(btn,false);if(d.room){showDebugPanel(d.room)}return}const room=d.room||d.call_id||d.id||'—';_currentCallRoom=room;setCallStatus({status:'Dispatched',duration:'0s',room,outcome:'Waiting for answer',transcript:'Waiting for transcript activity.'});toast('Call dispatched','ok');setButtonLoading(btn,false);loadActiveCalls();if(room!=='—'){showDebugPanel(room)}pollCallOutcome(phone,body.lead_name,startedAt,room).catch(err=>console.warn('Outcome polling failed',err))}catch(err){const msg=err.message||'Network error';showErr('call-err',msg);setCallStatus({status:'Failed',duration:'—',room:'—',outcome:'Error',transcript:msg});toast(msg,'err');setButtonLoading(btn,false)}});
 let _batchContacts=[];function parseCSVText(t){const lines=t.trim().split('\n').filter(l=>l.trim());if(!lines.length)return[];const h=lines[0].toLowerCase().split(',').map(x=>x.trim().replace(/"/g,'')),has=h.includes('phone')||h.includes('phone_number'),rows=has?lines.slice(1):lines;const defaultBiz=(window.__branding&&window.__branding.default_business_name)||(window.__branding&&window.__branding.company_name)||'our company';const defaultSvc=(window.__branding&&window.__branding.default_service_type)||'our service';return rows.map(row=>{const c=row.split(',').map(x=>x.trim().replace(/"/g,''));if(has){const o={};h.forEach((k,i)=>o[k]=c[i]||'');return{phone:o.phone||o.phone_number||'',lead_name:o.lead_name||o.name||'there',business_name:o.business_name||defaultBiz,service_type:o.service_type||defaultSvc}}return{phone:c[0]||'',lead_name:c[1]||'there',business_name:c[2]||defaultBiz,service_type:c[3]||defaultSvc}}).filter(r=>r.phone)}
 async function parseCSV(){const f=$('bc-file').files[0];if(!f){toast('Select a CSV file first','err');return}_batchContacts=parseCSVText(await f.text());const p=$('csv-preview');if(!_batchContacts.length){p.innerHTML='<span style="color:var(--danger)">No valid rows found</span>';return}p.innerHTML=`<span style="color:var(--accent)">${_batchContacts.length} contacts loaded</span>`;$('bc-start-btn').disabled=false}
 async function startBatch(btn=$('bc-start-btn')){if(!_batchContacts.length){toast('Parse CSV first','err');return}showErr('bc-err','');const delay=parseInt($('bc-delay').value)||5,profileId=$('bc-agent-profile').value||null,bar=$('bc-progress-bar'),lab=$('bc-progress-label'),total=_batchContacts.length,failures=[];$('bc-progress-wrap').style.display='block';setButtonLoading(btn,true,'Starting...');let attempted=0,succeeded=0,failed=0,skipped=0;for(const c of _batchContacts){const phone=(c.phone||'').trim();if(!phone.startsWith('+')){skipped++;failures.push(`${phone||'missing phone'}: skipped, phone must use E.164 format`);attempted++;lab.textContent=`${attempted} / ${total} - ${succeeded} dispatched, ${failed} failed, ${skipped} skipped`;bar.style.width=`${(attempted/total)*100}%`;continue}try{const r=await apiPost('/api/call',{...c,agent_profile_id:profileId});if(r.ok){succeeded++}else{failed++;failures.push(`${phone}: ${await responseMessage(r)}`)}}catch(e){failed++;failures.push(`${phone}: ${e.message||'Network error'}`)}attempted++;lab.textContent=`${attempted} / ${total} - ${succeeded} dispatched, ${failed} failed, ${skipped} skipped`;bar.style.width=`${(attempted/total)*100}%`;if(attempted<total)await new Promise(r=>setTimeout(r,delay*1000))}bar.style.width='100%';lab.textContent=`${total} / ${total} - ${succeeded} dispatched, ${failed} failed, ${skipped} skipped`;if(failures.length){showErr('bc-err',failures.slice(0,5).join(' | ')+(failures.length>5?` | +${failures.length-5} more`:''));toast(`Batch finished with ${failed+skipped} issue(s)`,'warn')}else toast(`Batch complete: ${succeeded} calls dispatched`,'ok');setButtonLoading(btn,false)}
@@ -3065,6 +3052,302 @@ async function loadUserData() {
 let _appInitialized=false;
 function initAppData(){if(_appInitialized)return;_appInitialized=true;applyIcons();loadUserData();renderActiveCalls();loadActiveCalls();loadStats();loadLiveConfig();loadRecentActivity();loadAgentProfiles();loadInboundData();scheduleLogsRefresh();setInterval(loadLiveConfig,30000);setInterval(loadActiveCalls,5000);setInterval(()=>{const active=document.querySelector('.tab-btn.active')?.dataset.tab;if(active==='stats'||active==='analytics'){loadStats();if(active==='stats')loadRecentActivity()}if(active==='inbound'){loadInboundData()}},10000)}document.addEventListener('DOMContentLoaded',()=>{bootstrapAuth()});
 let simRoom=null,simAudioEl=null,simAudioTrack=null;async function startSimulatedCall(){try{toast('Starting simulated AI call...','info');const r=await fetch('/api/simulate-call',{method:'POST'}),d=await r.json();if(!r.ok){toast(d.detail||'Failed to start simulation','err');return}simRoom=new LivekitClient.Room();$('stop-sim-btn').disabled=false;await simRoom.connect(d.livekit_url,d.token);await simRoom.localParticipant.setMicrophoneEnabled(true);toast('Microphone connected','ok');simRoom.on('trackSubscribed',track=>{if(track.kind==='audio'){if(!simAudioEl){simAudioEl=document.createElement('audio');simAudioEl.autoplay=true;simAudioEl.controls=true;simAudioEl.playsInline=true;document.body.appendChild(simAudioEl)}simAudioTrack=track;track.attach(simAudioEl);simAudioEl.play().catch(()=>toast('Audio autoplay blocked','err'))}});simRoom.on('disconnected',()=>cleanupSimulatedCall('Simulation disconnected'))}catch(e){console.error(e);toast(e.message||'Simulation failed','err')}}async function stopSimulatedCall(){await cleanupSimulatedCall('Simulation stopped')}async function cleanupSimulatedCall(m){try{if(simRoom){try{await simRoom.localParticipant.setMicrophoneEnabled(false)}catch(e){}try{simRoom.disconnect()}catch(e){}}if(simAudioTrack&&simAudioEl)try{simAudioTrack.detach(simAudioEl)}catch(e){}if(simAudioEl){simAudioEl.pause();simAudioEl.remove();simAudioEl=null}}finally{simRoom=null;simAudioTrack=null;if($('stop-sim-btn'))$('stop-sim-btn').disabled=true;if(m)toast(m,'info')}}
+let debugInterval = null;
+function showDebugPanel(room) {
+  const panel = $('call-debug-panel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  
+  if (debugInterval) clearInterval(debugInterval);
+  
+  const fetchDebug = async () => {
+    try {
+      const res = await fetch(`/api/call/debug/${room}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      renderDebugInfo(data);
+      
+      const s5 = data.stage5?.status;
+      if (s5 === 'success' || s5 === 'failed' || data.exception) {
+        clearInterval(debugInterval);
+      }
+    } catch (e) {
+      console.warn("Error fetching debug info:", e);
+    }
+  };
+  
+  fetchDebug();
+  debugInterval = setInterval(fetchDebug, 1500);
+}
+
+function renderDebugInfo(data) {
+  const content = $('debug-panel-content');
+  const panel = $('call-debug-panel');
+  const title = $('debug-panel-title');
+  if (!content || !panel || !title) return;
+  
+  let statusColor = "var(--warning)";
+  let bgColor = "rgba(245, 158, 11, 0.05)";
+  let titleText = "⏳ CALL DEBUG IN PROGRESS";
+  
+  let hasFailed = false;
+  let hasSuccess = data.stage5?.status === 'success';
+  
+  ["stage1", "stage2", "stage3", "stage4", "stage5"].forEach(k => {
+    if (data[k]?.status === 'failed') hasFailed = true;
+  });
+  if (data.exception) hasFailed = true;
+  
+  if (hasFailed) {
+    statusColor = "var(--danger)";
+    bgColor = "rgba(239, 68, 68, 0.05)";
+    titleText = "🔴 CALL DEBUG: FAILED";
+  } else if (hasSuccess) {
+    statusColor = "var(--success)";
+    bgColor = "rgba(22, 163, 74, 0.05)";
+    titleText = "🟢 CALL DEBUG: SUCCESS";
+  }
+  
+  panel.style.border = `2px solid ${statusColor}`;
+  panel.style.background = bgColor;
+  title.style.color = statusColor;
+  title.textContent = titleText;
+  
+  let html = "";
+  const esc = (txt) => {
+    if (txt === null || txt === undefined) return "";
+    return String(txt).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  };
+  
+  const getIcon = (status) => {
+    if (status === 'success') return '✅';
+    if (status === 'failed') return '❌';
+    if (status === 'dialing') return '⏳';
+    return '⏳';
+  };
+  
+  // Stage 1
+  html += `<strong>Stage 1: ${esc(data.stage1?.label || 'API request received')}</strong> ${getIcon(data.stage1?.status)}\n\n`;
+  
+  // Stage 2
+  html += `<strong>Stage 2: ${esc(data.stage2?.label || 'Settings loaded')}</strong> ${getIcon(data.stage2?.status)}\n`;
+  if (data.stage2?.detail) {
+    const keys = [
+      "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+      "VOBIZ_SIP_DOMAIN", "VOBIZ_USERNAME", "VOBIZ_PASSWORD",
+      "OUTBOUND_TRUNK_ID", "VOBIZ_OUTBOUND_NUMBER"
+    ];
+    keys.forEach(k => {
+      const item = data.stage2.detail[k];
+      if (item) {
+        html += `  • ${k}: <span style="color:#00b894">${esc(item.value)}</span> (Source: <span style="color:#5B5BD6">${esc(item.source)}</span>)\n`;
+      } else {
+        html += `  • ${k}: <span style="color:var(--danger)">Not Found</span>\n`;
+      }
+    });
+  }
+  html += `\n`;
+  
+  // Stage 3
+  html += `<strong>Stage 3: ${esc(data.stage3?.label || 'Room creation')}</strong> ${getIcon(data.stage3?.status)}\n`;
+  if (data.stage3?.detail) {
+    html += `  • Room Name: ${esc(data.stage3.detail.room_name || 'N/A')}\n`;
+    html += `  • Dispatch Created: ${data.stage3.detail.dispatch_id ? 'Yes' : 'No'}\n`;
+    html += `  • Dispatch ID: ${esc(data.stage3.detail.dispatch_id || 'N/A')}\n`;
+  }
+  html += `\n`;
+  
+  // Stage 4
+  html += `<strong>Stage 4: ${esc(data.stage4?.label || 'Agent started')}</strong> ${getIcon(data.stage4?.status)}\n\n`;
+  
+  // Stage 5
+  html += `<strong>Stage 5: ${esc(data.stage5?.label || 'SIP participant creation')}</strong> ${getIcon(data.stage5?.status)}\n`;
+  if (data.stage5?.detail) {
+    const d = data.stage5.detail;
+    html += `  • Method Called: <span style="font-weight:bold">${esc(d.method || 'create_sip_participant')}</span>\n`;
+    html += `  • Trunk ID: ${esc(d.trunk_id || 'N/A')}\n`;
+    html += `  • Room: ${esc(d.room || 'N/A')}\n`;
+    html += `  • Phone Number: ${esc(d.phone || 'N/A')}\n`;
+  }
+  
+  if (data.exception) {
+    const exc = data.exception;
+    html += `\n<div style="margin-top: 16px; padding: 14px; border: 1px solid var(--danger); border-radius: 8px; background: rgba(239, 68, 68, 0.08); color: var(--text);">`;
+    html += `<div style="font-weight:bold; color:var(--danger); margin-bottom:8px; font-size: 14px;">⚠️ EXCEPTION DETAILS</div>`;
+    html += `• <strong>Type:</strong> ${esc(exc.exception_type)}\n`;
+    html += `• <strong>Message:</strong> ${esc(exc.message)}\n`;
+    html += `• <strong>File:</strong> ${esc(exc.file)}\n`;
+    html += `• <strong>Function:</strong> ${esc(exc.function)}\n`;
+    html += `• <strong>Line Number:</strong> ${esc(exc.line)}\n`;
+    
+    if (exc.twirp_details) {
+      const tw = exc.twirp_details;
+      html += `\n<strong>Twirp Error Parameters:</strong>\n`;
+      html += `  - Code: ${esc(tw.code)}\n`;
+      html += `  - Status: ${esc(tw.status)}\n`;
+      html += `  - Metadata: ${esc(JSON.stringify(tw.metadata))}\n`;
+      if (tw.sip_status) html += `  - SIP Status: ${esc(tw.sip_status)}\n`;
+      if (tw.sip_status_code) html += `  - SIP Status Code: ${esc(tw.sip_status_code)}\n`;
+    }
+    
+    if (exc.missing_method) {
+      html += `\n<strong style="color:var(--danger)">AttributeError details:</strong> Missing method name is: <code>${esc(exc.missing_method)}</code>\n`;
+    }
+    
+    if (exc.livekit_404_object) {
+      html += `\n<strong style="color:var(--danger)">LiveKit 404 Error:</strong> Missing object identified as: <strong>${esc(exc.livekit_404_object)}</strong>\n`;
+    }
+    
+    html += `\n<details style="margin-top: 10px; cursor: pointer;">`;
+    html += `<summary style="color:#94a3b8; outline:none; font-weight:bold;">View Raw Stack Trace</summary>`;
+    html += `<pre style="margin-top:8px; padding:10px; font-size:11px; background:#0f172a; color:#e2e8f0; border-radius:6px; overflow-x:auto; max-height: 250px; border:1px solid #1e293b;">${esc(exc.traceback)}</pre>`;
+    html += `</details>`;
+    html += `</div>`;
+  }
+  
+  content.innerHTML = html;
+}
+
+// ── Company Knowledge Base Operations ──
+
+async function loadKnowledgeDocuments(btn = null) {
+  const tbody = $('kb-tbody');
+  if (!tbody) return;
+  
+  if (btn) setButtonLoading(btn, true, 'Loading...');
+  
+  try {
+    const res = await api('/api/company-knowledge/list');
+    const docs = Array.isArray(res) ? res : [];
+    
+    if (!docs.length) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No documents uploaded yet</td></tr>`;
+      return;
+    }
+    
+    tbody.innerHTML = docs.map(d => {
+      const created = d.created_at ? new Date(d.created_at).toLocaleString() : '-';
+      const sizeStr = d.content_length ? (d.content_length / 1024).toFixed(1) + ' KB' : '0 KB';
+      return `<tr>
+        <td style="font-weight: 500;">${esc(d.file_name || d.title)}</td>
+        <td><span class="badge badge-callback_requested" style="text-transform: uppercase;">${esc(d.file_type)}</span></td>
+        <td style="color: var(--muted);">${created}</td>
+        <td><span class="badge badge-booked">Ready</span></td>
+        <td>
+          <button class="btn btn-danger btn-sm" onclick="deleteKbDocument('${d.id}', '${jsStr(d.file_name || d.title)}')">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    console.error('Failed to load KB documents', err);
+    toast('Could not load knowledge documents', 'err');
+  } finally {
+    if (btn) setButtonLoading(btn, false);
+  }
+}
+
+async function uploadKbFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  
+  const errEl = $('kb-upload-err');
+  if (errEl) errEl.textContent = '';
+  
+  const max_size = 5 * 1024 * 1024;
+  if (file.size > max_size) {
+    const msg = 'File exceeds maximum size of 5MB.';
+    if (errEl) errEl.textContent = msg;
+    toast(msg, 'err');
+    input.value = '';
+    return;
+  }
+  
+  const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+  if (ext !== '.pdf' && ext !== '.docx' && ext !== '.txt') {
+    const msg = 'Unsupported file format. Use PDF, DOCX, or TXT.';
+    if (errEl) errEl.textContent = msg;
+    toast(msg, 'err');
+    input.value = '';
+    return;
+  }
+  
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const zone = $('knowledge-dropzone');
+  const originalHtml = zone ? zone.innerHTML : '';
+  if (zone) zone.innerHTML = `<div class="spinner" style="margin: 0 auto 10px;"></div>Uploading and extracting text...`;
+  
+  try {
+    // const token = getCookie('sb-access-token');
+    // const headers = {};
+    // if (token) {
+    //   headers['Authorization'] = `Bearer ${token}`;
+    // }
+    
+    const r = await fetch('/api/company-knowledge/upload', {
+      method: 'POST',
+      // headers: headers,
+      body: formData
+    });
+    
+    if (r.ok) {
+      toast('Document processed successfully', 'ok');
+      loadKnowledgeDocuments();
+    } else {
+      const d = await r.json();
+      const msg = d.detail || 'Upload failed';
+      if (errEl) errEl.textContent = msg;
+      toast(msg, 'err');
+    }
+  } catch (err) {
+    console.error('KB upload failed', err);
+    toast('Connection error during upload', 'err');
+  } finally {
+    if (zone) zone.innerHTML = originalHtml;
+    input.value = '';
+  }
+}
+
+async function deleteKbDocument(id, name) {
+  if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
+  try {
+    const r = await apiDel(`/api/company-knowledge/${id}`);
+    if (r.ok) {
+      toast('Document deleted', 'ok');
+      loadKnowledgeDocuments();
+    } else {
+      toast('Failed to delete document', 'err');
+    }
+  } catch (err) {
+    console.error('KB delete failed', err);
+    toast('Error deleting document', 'err');
+  }
+}
+
+function setupKbDropzone() {
+  const zone = $('knowledge-dropzone');
+  const input = $('kb-file-input');
+  if (!zone || !input) return;
+  
+  zone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    zone.classList.add('dragover');
+  });
+  
+  zone.addEventListener('dragleave', () => {
+    zone.classList.remove('dragover');
+  });
+  
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) {
+      input.files = e.dataTransfer.files;
+      uploadKbFile(input);
+    }
+  });
+}
 </script>
 </body>
 </html>

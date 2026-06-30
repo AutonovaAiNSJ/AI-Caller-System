@@ -158,25 +158,65 @@ async def entrypoint(ctx: agents.JobContext):
     if model_override:
         os.environ["GEMINI_MODEL"] = model_override
 
-    if system_prompt:
-        prompt_source = prompt_source or "metadata"
-    if not system_prompt:
-        from db import get_setting as _gs
-
-        system_prompt = await _gs("system_prompt", "") or None
-        prompt_source = "global" if system_prompt else "default"
-
-    agent_display_name = agent_profile_name or "Priya"
-
-    system_prompt = build_prompt(
+    # ── Resolve system prompt (DB → metadata → default) ─────────────────────
+    from db import get_setting as _gs
+    
+    # 1. Resolve Global Prompt
+    global_prompt_raw = await _gs("system_prompt", "") or None
+    global_prompt_str = build_prompt(
         lead_name=lead_name,
         business_name=business_name,
         service_type=service_type,
         phone=phone_number or "",
-        agent_name=agent_display_name,
-        custom_prompt=system_prompt,
+        agent_name=agent_profile_name or "Priya",
+        custom_prompt=global_prompt_raw
     )
+    
+    # 2. Resolve Agent-Specific Prompt (if any)
+    agent_prompt_str = ""
+    meta_prompt = meta.get("system_prompt")
+    if meta_prompt and prompt_source in ("agent_profile", "default_agent_profile", "per_call_override"):
+        agent_prompt_str = build_prompt(
+            lead_name=lead_name,
+            business_name=business_name,
+            service_type=service_type,
+            phone=phone_number or "",
+            agent_name=agent_profile_name or "Priya",
+            custom_prompt=meta_prompt
+        )
+
+    # Merge Global + Agent
+    if agent_prompt_str:
+        system_prompt = f"{global_prompt_str.rstrip()}\n\n{agent_prompt_str.strip()}"
+    else:
+        system_prompt = global_prompt_str
+        
     system_prompt = f"{system_prompt.rstrip()}{MANDATORY_TOOL_CONTRACT}"
+
+    # 3. Resolve Company Knowledge (if documents exist)
+    from db import get_active_company_knowledge
+    kb_docs = await get_active_company_knowledge(tenant_id)
+    if kb_docs:
+        merged_knowledge = "\n\n".join([doc["content"] for doc in kb_docs])
+        MAX_KB_SIZE = 40000
+        if len(merged_knowledge) > MAX_KB_SIZE:
+            merged_knowledge = merged_knowledge[:MAX_KB_SIZE] + "\n[Content truncated due to size limit]"
+            
+        kb_prompt = f"\n\n-----------------\nCOMPANY KNOWLEDGE\n{merged_knowledge}\n-----------------\n"
+        
+        ai_rules = (
+            "You must answer company-related questions ONLY using the company knowledge below.\n"
+            "Never invent services.\n"
+            "Never invent pricing.\n"
+            "Never invent policies.\n"
+            "Never invent products.\n"
+            "Never guess.\n"
+            "If the answer does not exist inside the uploaded company knowledge, reply exactly:\n"
+            "\"I don't have that information right now.\"\n"
+        )
+        
+        system_prompt = f"{system_prompt.rstrip()}\n\n{ai_rules}\n{kb_prompt}"
+
 
     global_tool_names = await get_enabled_tools()
     override_tool_names, override_parse_source = _parse_tool_names(tools_override) if tools_override_supplied else (
@@ -193,7 +233,7 @@ async def entrypoint(ctx: agents.JobContext):
         base_tool_names = list(DEFAULT_TOOL_NAMES)
         tool_source = "built_in_default"
 
-    booking_active = _booking_workflow_active(system_prompt)
+    booking_active = _booking_workflow_active(system_prompt, base_tool_names)
     mandatory_injections = []
     if booking_active:
         for name in MANDATORY_BOOKING_TOOLS:

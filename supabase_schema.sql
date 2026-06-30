@@ -302,6 +302,25 @@ CREATE TABLE IF NOT EXISTS email_delivery_logs (
 ALTER TABLE email_delivery_logs DISABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_email_delivery_logs_tenant ON email_delivery_logs (tenant_id, timestamp DESC);
 
-ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspension_reason TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS suspension_notes TEXT;
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Company Knowledge Base Schema DDL
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS company_knowledge (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'default',
+    title TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_length INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_company_knowledge_tenant ON company_knowledge (tenant_id, is_active);
+
 

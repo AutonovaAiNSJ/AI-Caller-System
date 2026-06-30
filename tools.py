@@ -88,6 +88,22 @@ async def terminate_call_room(room_name: str, delay: float = 3.0):
                 logger.info(f"Successfully deleted room {room_name} after delay")
     except Exception as exc:
         logger.error(f"Failed to delete room {room_name} after delay: {exc}")
+def _is_context_match(val1: Optional[str], val2: Optional[str]) -> bool:
+    v1 = (val1 or "").strip().lower()
+    v2 = (val2 or "").strip().lower()
+    if not v1 or not v2:
+        return True
+    if v1 in v2 or v2 in v1:
+        return True
+    v1_clean = "".join(c for c in v1 if c.isalnum())
+    v2_clean = "".join(c for c in v2 if c.isalnum())
+    if v1_clean and v2_clean and (v1_clean in v2_clean or v2_clean in v1_clean):
+        return True
+    words1 = {w for w in v1.split() if len(w) >= 3}
+    words2 = {w for w in v2.split() if len(w) >= 3}
+    if words1 & words2:
+        return True
+    return False
 
 
 async def _log(msg: str, detail: str = "", level: str = "info") -> None:
@@ -297,8 +313,8 @@ class AppointmentTools(llm.ToolContext):
             await _log("Availability check started", f"date={date} time={time}", "info")
             
             # Verify call metadata context matches parameters (Issue 5)
-            if (expected_business_name.strip().lower() != (self.business_name or "").strip().lower() or
-                expected_service_type.strip().lower() != (self.service_type or "").strip().lower()):
+            if (not _is_context_match(expected_business_name, self.business_name) or
+                not _is_context_match(expected_service_type, self.service_type)):
                 err_msg = f"Context validation failed: expected business '{self.business_name}' and service '{self.service_type}', but tool received '{expected_business_name}' and '{expected_service_type}'."
                 await log_error("tools", "Context validation failed in check_availability", err_msg, "error")
                 return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."
@@ -418,14 +434,14 @@ class AppointmentTools(llm.ToolContext):
             )
             
             # Service validation: reject services not matching current call context (Issue 1)
-            if service.strip().lower() != (self.service_type or "").strip().lower():
+            if not _is_context_match(service, self.service_type):
                 err_msg = f"Service validation failed: requested service '{service}' does not match call service context '{self.service_type}'."
                 await log_error("tools", "Service validation failed in book_appointment", err_msg, "error")
                 return f"Error: Cannot book appointment for '{service}'. The only service being discussed is '{self.service_type}'."
 
             # Context validation (Issue 5)
-            if (expected_business_name.strip().lower() != (self.business_name or "").strip().lower() or
-                expected_service_type.strip().lower() != (self.service_type or "").strip().lower()):
+            if (not _is_context_match(expected_business_name, self.business_name) or
+                not _is_context_match(expected_service_type, self.service_type)):
                 err_msg = f"Context validation failed in book_appointment: expected business '{self.business_name}' and service '{self.service_type}', but tool received '{expected_business_name}' and '{expected_service_type}'."
                 await log_error("tools", "Context validation failed in book_appointment", err_msg, "error")
                 return f"Error: Context mismatch. This tool can only be used for {self.business_name} and {self.service_type}."

@@ -176,6 +176,11 @@ def init_db() -> None:
             db.table("email_delivery_logs").select("id").limit(1).execute()
         except Exception:
             print("[warn] Table 'email_delivery_logs' is missing. Please run phase 3 migration in Supabase Dashboard SQL Editor.")
+
+        try:
+            db.table("company_knowledge").select("id").limit(1).execute()
+        except Exception:
+            print("[warn] Table 'company_knowledge' is missing. Please run the SQL DDL in your Supabase Dashboard -> SQL Editor.")
     except Exception as exc:
         print(f"[warn] Supabase connection failed: {exc}")
         print("   Run supabase_schema.sql in your Supabase Dashboard -> SQL Editor")
@@ -1713,3 +1718,45 @@ async def get_all_email_delivery_logs(limit: int = 200) -> list:
         return res.data or []
     except Exception:
         return []
+
+# ── Company Knowledge Base Helpers ──
+
+async def get_active_company_knowledge(tenant_id: Optional[str] = None) -> list[dict]:
+    tenant_id = _clean_tenant_id(tenant_id)
+    db = await _adb()
+    try:
+        res = await db.table("company_knowledge").select("*").eq("tenant_id", tenant_id).eq("is_active", True).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch active company knowledge for tenant {tenant_id}: {e}")
+        return []
+
+async def get_all_company_knowledge(tenant_id: Optional[str] = None) -> list[dict]:
+    tenant_id = _clean_tenant_id(tenant_id)
+    db = await _adb()
+    try:
+        res = await db.table("company_knowledge").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"Failed to fetch company knowledge list for tenant {tenant_id}: {e}")
+        return []
+
+async def save_company_knowledge(doc: dict) -> dict:
+    db = await _adb()
+    try:
+        res = await db.table("company_knowledge").insert(doc).execute()
+        return (res.data or [None])[0] or {}
+    except Exception as e:
+        logger.error(f"Failed to save company knowledge: {e}")
+        raise e
+
+async def delete_company_knowledge(kb_id: str, tenant_id: Optional[str] = None) -> bool:
+    tenant_id = _clean_tenant_id(tenant_id)
+    db = await _adb()
+    try:
+        await db.table("company_knowledge").delete().eq("id", kb_id).eq("tenant_id", tenant_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete company knowledge {kb_id} for tenant {tenant_id}: {e}")
+        return False
+

@@ -259,7 +259,137 @@ async def entrypoint(ctx: agents.JobContext):
     4. THEN start Gemini Live session
     5. Keep alive via participant_disconnected event
     """
-    await ctx.connect()
+    logger.info("KB_LOG: entrypoint started, about to call await ctx.connect()")
+    try:
+        await asyncio.wait_for(ctx.connect(), timeout=15.0)
+        logger.info("KB_LOG: ctx.connect() success")
+    except asyncio.TimeoutError:
+        logger.error("KB_LOG: ctx.connect() TIMEOUT")
+    except Exception as exc:
+        logger.exception("KB_LOG: ctx.connect() exception")
+
+
+    async def _send_debug_stage(stage: int, status: str, **kwargs):
+        import aiohttp
+        port = os.getenv("PORT", "8000")
+        url = f"http://127.0.0.1:{port}/api/call/debug/{ctx.room.name}/stage"
+        payload = {
+            "stage": stage,
+            "status": status,
+            **kwargs
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=2) as r:
+                    await r.read()
+        except:
+            pass
+
+    def extract_exception_info(exc: Exception) -> dict:
+        import sys
+        import traceback
+        import re
+
+        tb_type, tb_val, tb_ob = sys.exc_info()
+        if tb_ob is None:
+            tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            frame = exc.__traceback__
+            filename = "Unknown"
+            function_name = "Unknown"
+            line_no = 0
+            while frame:
+                filename = frame.tb_frame.f_code.co_filename
+                function_name = frame.tb_frame.f_code.co_name
+                line_no = frame.tb_lineno
+                frame = frame.tb_next
+        else:
+            tb_str = "".join(traceback.format_exception(tb_type, tb_val, tb_ob))
+            frame = tb_ob
+            filename = "Unknown"
+            function_name = "Unknown"
+            line_no = 0
+            while frame:
+                filename = frame.tb_frame.f_code.co_filename
+                function_name = frame.tb_frame.f_code.co_name
+                line_no = frame.tb_lineno
+                frame = frame.tb_next
+
+        if filename != "Unknown":
+            filename = os.path.basename(filename)
+
+        exc_type = type(exc).__name__
+        exc_msg = str(exc)
+
+        details = {
+            "exception_type": exc_type,
+            "message": exc_msg,
+            "file": filename,
+            "function": function_name,
+            "line": line_no,
+            "traceback": tb_str,
+            "twirp_details": None,
+            "missing_method": None,
+            "livekit_404_object": None
+        }
+
+        if isinstance(exc, AttributeError):
+            details["missing_method"] = getattr(exc, "name", None)
+            if not details["missing_method"]:
+                m = re.search(r"has no attribute '([^']+)'", exc_msg)
+                if m:
+                    details["missing_method"] = m.group(1)
+
+        is_twirp = False
+        for base in type(exc).__mro__:
+            if base.__name__ == "TwirpError" or "twirp" in base.__module__:
+                is_twirp = True
+                break
+
+        if is_twirp or hasattr(exc, "code") or hasattr(exc, "status"):
+            twirp_details = {
+                "code": getattr(exc, "code", "Unknown"),
+                "status": getattr(exc, "status", 0),
+                "metadata": getattr(exc, "metadata", {}),
+                "sip_status": None,
+                "sip_status_code": None
+            }
+            meta = getattr(exc, "metadata", {}) or {}
+            if "sip_status" in meta:
+                twirp_details["sip_status"] = meta["sip_status"]
+            if "sip_status_code" in meta:
+                twirp_details["sip_status_code"] = meta["sip_status_code"]
+            if not twirp_details["sip_status_code"]:
+                m = re.search(r"sip status (\d+)", exc_msg, re.IGNORECASE)
+                if m:
+                    twirp_details["sip_status_code"] = int(m.group(1))
+            details["twirp_details"] = twirp_details
+
+        is_not_found = False
+        if hasattr(exc, "code") and exc.code == "not_found":
+            is_not_found = True
+        elif hasattr(exc, "status") and exc.status == 404:
+            is_not_found = True
+        elif "404" in exc_msg or "not found" in exc_msg.lower():
+            is_not_found = True
+
+        if is_not_found:
+            msg_lower = exc_msg.lower()
+            if "room" in msg_lower:
+                details["livekit_404_object"] = "Room"
+            elif "trunk" in msg_lower or "sip" in msg_lower:
+                details["livekit_404_object"] = "SIP Trunk"
+            elif "dispatch" in msg_lower:
+                details["livekit_404_object"] = "Dispatch"
+            elif "participant" in msg_lower:
+                details["livekit_404_object"] = "Participant"
+            else:
+                details["livekit_404_object"] = "Unknown"
+
+        return details
+
+    logger.info("KB_LOG: About to call await _send_debug_stage(4, success)")
+    await _send_debug_stage(4, "success")
+    logger.info("KB_LOG: _send_debug_stage(4, success) done")
 
     # ── Parse metadata ───────────────────────────────────────────────────────
     phone_number:   Optional[str] = None
@@ -333,24 +463,85 @@ async def entrypoint(ctx: agents.JobContext):
     # if not enabled_tools:
     #     enabled_tools = await get_enabled_tools()
     # ── Resolve system prompt (DB → metadata → default) ─────────────────────
-    if system_prompt:
-        prompt_source = prompt_source or "metadata"
-    if not system_prompt:
-        from db import get_setting as _gs
-        system_prompt = await _gs("system_prompt", "") or None
-        prompt_source = "global" if system_prompt else "default"
-
+    from db import get_setting as _gs
+    
     agent_display_name = agent_profile_name or "Priya"
 
-    system_prompt = build_prompt(
+    # 1. Resolve Global Prompt
+    logger.info("KB_LOG: About to call await _gs(system_prompt, )")
+    try:
+        global_prompt_raw = await asyncio.wait_for(_gs("system_prompt", ""), timeout=10.0)
+        logger.info(f"KB_LOG: _gs(system_prompt) success. Length: {len(global_prompt_raw) if global_prompt_raw else 0}")
+    except asyncio.TimeoutError:
+        logger.error("KB_LOG: _gs(system_prompt) TIMEOUT")
+        global_prompt_raw = None
+    except Exception as exc:
+        logger.exception("KB_LOG: _gs(system_prompt) exception")
+        global_prompt_raw = None
+    
+    global_prompt_str = build_prompt(
         lead_name=lead_name,
         business_name=business_name,
         service_type=service_type,
         phone=phone_number or "",
-        agent_name=agent_display_name,
-        custom_prompt=system_prompt,
+        agent_name=agent_profile_name or "Priya",
+        custom_prompt=global_prompt_raw
     )
+    
+    # 2. Resolve Agent-Specific Prompt (if any)
+    agent_prompt_str = ""
+    meta_prompt = meta.get("system_prompt")
+    if meta_prompt and prompt_source in ("agent_profile", "default_agent_profile", "per_call_override"):
+        agent_prompt_str = build_prompt(
+            lead_name=lead_name,
+            business_name=business_name,
+            service_type=service_type,
+            phone=phone_number or "",
+            agent_name=agent_profile_name or "Priya",
+            custom_prompt=meta_prompt
+        )
+
+    # Merge Global + Agent
+    if agent_prompt_str:
+        system_prompt = f"{global_prompt_str.rstrip()}\n\n{agent_prompt_str.strip()}"
+    else:
+        system_prompt = global_prompt_str
+        
     system_prompt = f"{system_prompt.rstrip()}{MANDATORY_TOOL_CONTRACT}"
+
+    # 3. Resolve Company Knowledge (if documents exist)
+    from db import get_active_company_knowledge
+    logger.info("KB_LOG: About to call await get_active_company_knowledge()")
+    try:
+        kb_docs = await asyncio.wait_for(get_active_company_knowledge(tenant_id), timeout=10.0)
+        logger.info(f"KB_LOG: get_active_company_knowledge success. Docs count: {len(kb_docs) if kb_docs else 0}")
+    except asyncio.TimeoutError:
+        logger.error("KB_LOG: get_active_company_knowledge TIMEOUT")
+        kb_docs = []
+    except Exception as exc:
+        logger.exception("KB_LOG: get_active_company_knowledge exception")
+        kb_docs = []
+
+    if kb_docs:
+        merged_knowledge = "\n\n".join([doc["content"] for doc in kb_docs])
+        MAX_KB_SIZE = 40000
+        if len(merged_knowledge) > MAX_KB_SIZE:
+            merged_knowledge = merged_knowledge[:MAX_KB_SIZE] + "\n[Content truncated due to size limit]"
+            
+        kb_prompt = f"\n\n-----------------\nCOMPANY KNOWLEDGE\n{merged_knowledge}\n-----------------\n"
+        
+        ai_rules = (
+            "You must answer company-related questions ONLY using the company knowledge below.\n"
+            "Never invent services.\n"
+            "Never invent pricing.\n"
+            "Never invent policies.\n"
+            "Never invent products.\n"
+            "Never guess.\n"
+            "If the answer does not exist inside the uploaded company knowledge, reply exactly:\n"
+            "\"I don't have that information right now.\"\n"
+        )
+        
+        system_prompt = f"{system_prompt.rstrip()}\n\n{ai_rules}\n{kb_prompt}"
 
     # Prepend strict context lock to system prompt
     context_lock = (
@@ -361,9 +552,19 @@ async def entrypoint(ctx: agents.JobContext):
     )
     system_prompt = context_lock + system_prompt
 
+
     # Tool precedence: mandatory booking tools are injected after the selected source.
     # Source order is global defaults, then profile/campaign/per-call metadata overrides.
-    global_tool_names = await get_enabled_tools()
+    logger.info("KB_LOG: About to call await get_enabled_tools()")
+    try:
+        global_tool_names = await asyncio.wait_for(get_enabled_tools(), timeout=10.0)
+        logger.info("KB_LOG: get_enabled_tools success")
+    except asyncio.TimeoutError:
+        logger.error("KB_LOG: get_enabled_tools TIMEOUT")
+        global_tool_names = None
+    except Exception as exc:
+        logger.exception("KB_LOG: get_enabled_tools exception")
+        global_tool_names = None
     override_tool_names, override_parse_source = _parse_tool_names(tools_override) if tools_override_supplied else (None, "not_supplied")
     if tools_override_supplied:
         base_tool_names = override_tool_names or []
@@ -540,6 +741,15 @@ async def entrypoint(ctx: agents.JobContext):
             await _log("info", f"Dialing {phone_number} via SIP trunk {trunk_id}")
 
             try:
+                await _send_debug_stage(
+                    5, "dialing",
+                    method="create_sip_participant",
+                    trunk_id=trunk_id,
+                    room=ctx.room.name,
+                    phone=phone_number
+                )
+
+                logger.info("KB_LOG: About to call await create_sip_participant()")
                 await ctx.api.sip.create_sip_participant(
                     api.CreateSIPParticipantRequest(
                         room_name=ctx.room.name,
@@ -549,6 +759,9 @@ async def entrypoint(ctx: agents.JobContext):
                         wait_until_answered=True,
                     )
                 )
+                logger.info("KB_LOG: create_sip_participant SUCCESS")
+
+                await _send_debug_stage(5, "success")
 
                 await _log(
                     "info",
@@ -558,6 +771,9 @@ async def entrypoint(ctx: agents.JobContext):
                 asyncio.create_task(tool_ctx.mark_connected())
 
             except Exception as exc:
+                logger.error(f"KB_LOG: create_sip_participant EXCEPTION: {exc}")
+                exc_info = extract_exception_info(exc)
+                await _send_debug_stage(5, "failed", exception=exc_info)
                 await _log("error", f"SIP dial FAILED for {phone_number}: {exc}")
                 await _fallback_call_log(
                     "no_answer",
